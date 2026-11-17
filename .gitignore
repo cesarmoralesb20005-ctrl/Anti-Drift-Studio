@@ -1,0 +1,32 @@
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Python caches & build artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Compiled C binaries / objects
+*.o
+*.so
+*.out
+daemon/xbox-antidrift
+tests/bench_latency
+
+# Recordings, models, local caches & IDE
+*.mp4
+*.mkv
+*.mov
+.vscode/
+.idea/
+.DS_Store
+*.swp
