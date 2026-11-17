@@ -37,10 +37,10 @@ class ControllerWidget(QWidget):
 
     # Desaturated architectural hues (zero fluorescent neon)
     ABXY_CENTERS: dict[str, tuple[QPointF, QColor]] = {
-        "Y": (QPointF(448.0, 160.0), QColor("#C59B57")),
-        "B": (QPointF(484.0, 194.0), QColor("#B8625C")),
-        "A": (QPointF(448.0, 228.0), QColor("#548C6E")),
-        "X": (QPointF(412.0, 194.0), QColor("#5680AD")),
+        "Y": (QPointF(448.0, 160.0), QColor("#F59E0B")),
+        "B": (QPointF(484.0, 194.0), QColor("#EF4444")),
+        "A": (QPointF(448.0, 228.0), QColor("#059669")),
+        "X": (QPointF(412.0, 194.0), QColor("#0EA5E9")),
     }
 
     def __init__(self, parent=None) -> None:
@@ -275,9 +275,9 @@ class ControllerWidget(QWidget):
             ("RT", self._state.rt, QRectF(402, 24, 86, 42)),
         ):
             frac = max(0.0, min(1.0, float(val) / float(TRIGGER_MAX)))
-            p.setPen(QPen(QColor("#353841"), 1.4))
-            p.setBrush(QColor("#15161A"))
-            p.drawRoundedRect(rect, 8, 8)
+            p.setPen(QPen(QColor("#1E2630"), 1.3))
+            p.setBrush(QColor("#07090C"))
+            p.drawRoundedRect(rect, 7, 7)
 
             if frac > 0.01:
                 fill_h = rect.height() * frac
@@ -288,11 +288,11 @@ class ControllerWidget(QWidget):
                     max(4.0, fill_h - 4.0),
                 )
                 p.setPen(Qt.NoPen)
-                p.setBrush(QColor("#5680AD"))
-                p.drawRoundedRect(fill_rect, 6, 6)
+                p.setBrush(QColor("#059669"))
+                p.drawRoundedRect(fill_rect, 5, 5)
 
-            p.setPen(QColor("#F4F4F0") if frac > 0.25 else QColor("#8F949E"))
-            p.setFont(QFont("Sans Serif", 9, QFont.Bold))
+            p.setPen(QColor("#F8FAFC") if frac > 0.25 else QColor("#94A3B8"))
+            p.setFont(QFont("JetBrains Mono", 9, QFont.Bold))
             p.drawText(rect, Qt.AlignCenter, f"{label} {round(frac * 100)}%")
 
         for label, pressed, rect in (
@@ -300,16 +300,16 @@ class ControllerWidget(QWidget):
             ("RB", self._state.buttons.get("RB", False), QRectF(388, 84, 118, 28)),
         ):
             if pressed:
-                p.setPen(QPen(QColor("#DFDFD8"), 1.6))
-                p.setBrush(QColor("#EFEFE9"))
-                p.drawRoundedRect(rect, 11, 11)
-                p.setPen(QColor("#16171A"))
+                p.setPen(QPen(QColor("#10B981"), 1.6))
+                p.setBrush(QColor("#059669"))
+                p.drawRoundedRect(rect, 8, 8)
+                p.setPen(QColor("#FFFFFF"))
             else:
-                p.setPen(QPen(QColor("#363942"), 1.3))
-                p.setBrush(QColor("#202228"))
-                p.drawRoundedRect(rect, 11, 11)
-                p.setPen(QColor("#8F949E"))
-            p.setFont(QFont("Sans Serif", 9, QFont.Bold))
+                p.setPen(QPen(QColor("#242E3A"), 1.3))
+                p.setBrush(QColor("#11161C"))
+                p.drawRoundedRect(rect, 8, 8)
+                p.setPen(QColor("#94A3B8"))
+            p.setFont(QFont("JetBrains Mono", 9, QFont.Bold))
             p.drawText(rect, Qt.AlignCenter, label)
 
     def _draw_shell(self, p: QPainter) -> None:
@@ -333,11 +333,11 @@ class ControllerWidget(QWidget):
         p.restore()
 
         shell_grad = QLinearGradient(310, 105, 310, 400)
-        shell_grad.setColorAt(0.0, QColor("#2B2E35"))
-        shell_grad.setColorAt(0.55, QColor("#23252B"))
-        shell_grad.setColorAt(1.0, QColor("#1B1D22"))
+        shell_grad.setColorAt(0.0, QColor("#161C24"))
+        shell_grad.setColorAt(0.55, QColor("#11161C"))
+        shell_grad.setColorAt(1.0, QColor("#0B0E12"))
 
-        p.setPen(QPen(QColor("#3C404A"), 1.6))
+        p.setPen(QPen(QColor("#273240"), 1.5))
         p.setBrush(shell_grad)
         p.drawPath(body)
 
@@ -348,11 +348,11 @@ class ControllerWidget(QWidget):
 
     def _draw_guide_and_center_buttons(self, p: QPainter) -> None:
         g_pressed = self._state.buttons.get("GUIDE", False)
-        p.setPen(QPen(QColor("#EFEFE9") if g_pressed else QColor("#454852"), 1.8))
-        p.setBrush(QColor("#EFEFE9") if g_pressed else QColor("#17191D"))
+        p.setPen(QPen(QColor("#10B981") if g_pressed else QColor("#2A3441"), 1.8))
+        p.setBrush(QColor("#059669") if g_pressed else QColor("#0A0D12"))
         p.drawEllipse(self.GUIDE_CENTER, 17.5, 17.5)
 
-        p.setPen(QPen(QColor("#16171A") if g_pressed else QColor("#8E939D"), 2.2))
+        p.setPen(QPen(QColor("#FFFFFF") if g_pressed else QColor("#94A3B8"), 2.2))
         cx, cy = self.GUIDE_CENTER.x(), self.GUIDE_CENTER.y()
         p.drawLine(QPointF(cx - 6.5, cy - 6.5), QPointF(cx + 6.5, cy + 6.5))
         p.drawLine(QPointF(cx + 6.5, cy - 6.5), QPointF(cx - 6.5, cy + 6.5))
@@ -362,10 +362,10 @@ class ControllerWidget(QWidget):
             ("MENU", self.MENU_CENTER, "☰"),
         ):
             pressed = self._state.buttons.get(key, False)
-            p.setPen(QPen(QColor("#EFEFE9") if pressed else QColor("#40434C"), 1.4))
-            p.setBrush(QColor("#EFEFE9") if pressed else QColor("#181A1E"))
+            p.setPen(QPen(QColor("#10B981") if pressed else QColor("#2A3441"), 1.4))
+            p.setBrush(QColor("#059669") if pressed else QColor("#0B0E12"))
             p.drawEllipse(center, 12, 12)
-            p.setPen(QColor("#16171A") if pressed else QColor("#8E939D"))
+            p.setPen(QColor("#FFFFFF") if pressed else QColor("#94A3B8"))
             p.setFont(QFont("Sans Serif", 9, QFont.Bold))
             p.drawText(
                 QRectF(center.x() - 12, center.y() - 12, 24, 24),
@@ -375,8 +375,8 @@ class ControllerWidget(QWidget):
 
     def _draw_dpad(self, p: QPainter) -> None:
         c = self.DPAD_CENTER
-        p.setPen(QPen(QColor("#363942"), 1.4))
-        p.setBrush(QColor("#16171B"))
+        p.setPen(QPen(QColor("#242E3A"), 1.4))
+        p.setBrush(QColor("#090C10"))
         p.drawEllipse(c, 38, 38)
 
         hx, hy = self._state.hat_x, self._state.hat_y
@@ -387,18 +387,18 @@ class ControllerWidget(QWidget):
             (QRectF(c.x() + 10, c.y() - 10, 21, 20), hx > 0, "▶"),
         ]
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor("#23262D"))
+        p.setBrush(QColor("#141920"))
         p.drawRect(QRectF(c.x() - 10, c.y() - 10, 20, 20))
 
         for rect, active, arrow in arms:
             if active:
-                p.setPen(QPen(QColor("#EFEFE9"), 1.4))
-                p.setBrush(QColor("#EFEFE9"))
+                p.setPen(QPen(QColor("#10B981"), 1.4))
+                p.setBrush(QColor("#059669"))
             else:
-                p.setPen(QPen(QColor("#383B45"), 1.1))
-                p.setBrush(QColor("#23262D"))
-            p.drawRoundedRect(rect, 4, 4)
-            p.setPen(QColor("#16171A") if active else QColor("#747882"))
+                p.setPen(QPen(QColor("#26303D"), 1.1))
+                p.setBrush(QColor("#141920"))
+            p.drawRoundedRect(rect, 3, 3)
+            p.setPen(QColor("#FFFFFF") if active else QColor("#64748B"))
             p.setFont(QFont("Sans Serif", 8, QFont.Bold))
             p.drawText(rect, Qt.AlignCenter, arrow)
 
@@ -439,13 +439,13 @@ class ControllerWidget(QWidget):
         well_r = 40.0
         travel = 24.0
 
-        p.setPen(QPen(QColor("#EFEFE9") if clicked else QColor("#383B44"), 1.8))
-        p.setBrush(QColor("#141519"))
+        p.setPen(QPen(QColor("#10B981") if clicked else QColor("#26303D"), 1.8))
+        p.setBrush(QColor("#07090C"))
         p.drawEllipse(center, well_r, well_r)
 
         dz_px = max(2.0, dz * travel)
-        p.setPen(QPen(QColor(197, 155, 87, 110), 1.0, Qt.DashLine))
-        p.setBrush(QColor(197, 155, 87, 22))
+        p.setPen(QPen(QColor(16, 185, 129, 120), 1.0, Qt.DashLine))
+        p.setBrush(QColor(5, 150, 105, 22))
         if self._config.dz_mode in ("radial", "hybrid"):
             p.drawEllipse(center, dz_px, dz_px)
         else:
@@ -458,7 +458,7 @@ class ControllerWidget(QWidget):
                 )
             )
 
-        p.setPen(QPen(QColor(154, 158, 168, 40), 1.0))
+        p.setPen(QPen(QColor(148, 163, 184, 38), 1.0))
         p.drawLine(
             QPointF(center.x() - well_r + 6, center.y()),
             QPointF(center.x() + well_r - 6, center.y()),
@@ -478,27 +478,27 @@ class ControllerWidget(QWidget):
         )
 
         if self._state.mode != "disconnected":
-            p.setPen(QPen(QColor("#C86A63"), 1.4))
-            p.setBrush(QColor(200, 106, 99, 60))
+            p.setPen(QPen(QColor("#F43F5E"), 1.5))
+            p.setBrush(QColor(244, 63, 94, 75))
             p.drawEllipse(raw_pos, 4.5, 4.5)
 
         cap_r = 20.5
         moved = abs(out_x) > 400 or abs(out_y) > 400
         if clicked:
-            p.setPen(QPen(QColor("#EFEFE9"), 2.0))
-            p.setBrush(QColor("#5680AD"))
+            p.setPen(QPen(QColor("#34D399"), 2.0))
+            p.setBrush(QColor("#059669"))
         else:
             p.setPen(
                 QPen(
-                    QColor("#548C6E") if moved else QColor("#545863"),
+                    QColor("#10B981") if moved else QColor("#3B4756"),
                     1.8,
                 )
             )
-            p.setBrush(QColor("#30333B"))
+            p.setBrush(QColor("#171D26"))
         p.drawEllipse(out_pos, cap_r, cap_r)
 
-        p.setPen(QColor("#F7F7F4") if (clicked or moved) else QColor("#B9BDC7"))
-        p.setFont(QFont("Sans Serif", 9, QFont.Bold))
+        p.setPen(QColor("#F8FAFC") if (clicked or moved) else QColor("#94A3B8"))
+        p.setFont(QFont("JetBrains Mono", 9, QFont.Bold))
         p.drawText(
             QRectF(out_pos.x() - 16, out_pos.y() - 12, 32, 24),
             Qt.AlignCenter,
@@ -512,12 +512,12 @@ class ControllerWidget(QWidget):
         for code, rect in rects:
             pressed = self._state.extra_buttons.get(code, False)
             if pressed:
-                p.setPen(QPen(QColor("#EFEFE9"), 1.6))
-                p.setBrush(QColor("#EFEFE9"))
+                p.setPen(QPen(QColor("#10B981"), 1.6))
+                p.setBrush(QColor("#059669"))
             else:
-                p.setPen(QPen(QColor("#3A3D46"), 1.2))
-                p.setBrush(QColor("#1C1E24"))
-            p.drawRoundedRect(rect, 6, 6)
-            p.setPen(QColor("#16171A") if pressed else QColor("#9A9EA8"))
-            p.setFont(QFont("Sans Serif", 8.5, QFont.Bold))
+                p.setPen(QPen(QColor("#242E3A"), 1.2))
+                p.setBrush(QColor("#10141A"))
+            p.drawRoundedRect(rect, 5, 5)
+            p.setPen(QColor("#FFFFFF") if pressed else QColor("#94A3B8"))
+            p.setFont(QFont("JetBrains Mono", 8.5, QFont.Bold))
             p.drawText(rect, Qt.AlignCenter, short_extra_badge(code))

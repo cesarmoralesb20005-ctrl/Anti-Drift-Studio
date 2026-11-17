@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from PySide6.QtCore import QPointF, QRectF, QThread, QTimer, Qt, Signal
+from PySide6.QtCore import QByteArray, QPointF, QRectF, QThread, QTimer, Qt, Signal
 from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPen, QPixmap
+from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -66,210 +67,239 @@ from .service_ctrl import (
 )
 from .widgets.circularity_dialog import CircularityTestDialog
 from .widgets.controller_widget import ControllerWidget
-from .widgets.fit_scroll import FitWidthScrollArea
+from .widgets.fit_scroll import B7_MARK_SVG, B7MarkWidget, FitWidthScrollArea, GridRootWidget
 from .widgets.macros_tab import MacrosTabWidget
 from .widgets.stick_plot_widget import StickPlotWidget
 
 APP_STYLESHEET = """
-QMainWindow, QWidget, QDialog {
-    background-color: #16171A;
-    color: #EFEFE9;
+QMainWindow, QDialog {
+    background-color: #090B0E;
+    color: #F8FAFC;
     font-family: "Inter", "Noto Sans", "Segoe UI", sans-serif;
     font-size: 13px;
 }
+QWidget#PageCanvas {
+    background-color: transparent;
+}
 QLabel, QCheckBox {
     background-color: transparent;
+    color: #E2E8F0;
 }
 QCheckBox::indicator {
     width: 15px;
     height: 15px;
-    border-radius: 4px;
-    border: 1px solid #4A4F5C;
-    background-color: #141519;
+    border-radius: 3px;
+    border: 1px solid #334155;
+    background-color: #07090C;
 }
 QCheckBox::indicator:checked {
-    background-color: #4D8065;
-    border-color: #639E7E;
+    background-color: #059669;
+    border-color: #10B981;
 }
-QScrollArea {
+QScrollArea, QScrollArea > QWidget > QWidget {
     background-color: transparent;
 }
 QScrollBar:vertical {
-    background: #141519;
-    width: 8px;
-    border-radius: 4px;
+    background: #07090C;
+    width: 7px;
+    border-radius: 3px;
 }
 QScrollBar::handle:vertical {
-    background: #363943;
-    border-radius: 4px;
+    background: #1E293B;
+    border-radius: 3px;
     min-height: 24px;
+}
+QScrollBar::handle:vertical:hover {
+    background: #059669;
 }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
     height: 0px;
 }
 QFrame#Card {
-    background-color: #1E2025;
-    border: 1px solid #2D3038;
-    border-radius: 10px;
+    background-color: #0F1318;
+    border: 1px solid #1E2630;
+    border-radius: 8px;
 }
 QFrame#HeaderBar {
-    background-color: #1A1C21;
-    border: 1px solid #2D3038;
-    border-radius: 10px;
+    background-color: #0C1014;
+    border: 1px solid #1E2630;
+    border-bottom: 2px solid #059669;
+    border-radius: 8px;
 }
 QLabel#Title {
     font-size: 17px;
+    font-weight: 800;
+    color: #F8FAFC;
+    letter-spacing: -0.3px;
+}
+QLabel#BrandTag {
+    font-family: "JetBrains Mono", "Fira Code", monospace;
+    font-size: 10px;
     font-weight: 700;
-    color: #F4F4F0;
+    color: #10B981;
+    letter-spacing: 1.4px;
 }
 QLabel#Subtitle {
     font-size: 12px;
-    color: #9A9EA8;
+    color: #94A3B8;
 }
 QLabel#SectionTitle {
-    font-size: 14px;
+    font-size: 13.5px;
     font-weight: 700;
-    color: #F0F0EC;
+    color: #F8FAFC;
 }
 QLabel#MutedNote {
     font-size: 12px;
-    color: #9A9EA8;
+    color: #94A3B8;
 }
 QLabel#PillOk {
-    background-color: #1D3327;
-    color: #8FC7A7;
-    border: 1px solid #3C6E52;
-    border-radius: 8px;
+    background-color: #0B261E;
+    color: #34D399;
+    border: 1px solid #059669;
+    border-radius: 6px;
     padding: 5px 11px;
     font-weight: 600;
     font-size: 12px;
 }
 QLabel#PillOff {
-    background-color: #25272E;
-    color: #9A9EA8;
-    border: 1px solid #383B44;
-    border-radius: 8px;
+    background-color: #11161C;
+    color: #94A3B8;
+    border: 1px solid #242E3A;
+    border-radius: 6px;
     padding: 5px 11px;
     font-weight: 600;
     font-size: 12px;
 }
 QPushButton {
-    background-color: #272A32;
-    color: #EFEFE9;
-    border: 1px solid #383B45;
-    border-radius: 7px;
+    background-color: #141920;
+    color: #E2E8F0;
+    border: 1px solid #26313E;
+    border-radius: 6px;
     padding: 6px 12px;
     font-weight: 600;
 }
 QPushButton:hover {
-    background-color: #30343E;
-    border-color: #494E5C;
+    background-color: #1B222C;
+    border-color: #3B495B;
+    color: #F8FAFC;
 }
 QPushButton:pressed {
-    background-color: #202229;
+    background-color: #0D1116;
 }
 QPushButton:disabled {
-    color: #6B6F79;
-    background-color: #1B1D22;
-    border-color: #272A31;
+    color: #475569;
+    background-color: #0B0E12;
+    border-color: #182028;
 }
 QPushButton#PrimaryBtn {
-    background-color: #4D8065;
+    background-color: #059669;
     color: #FFFFFF;
-    border: 1px solid #5D9879;
+    border: 1px solid #10B981;
 }
 QPushButton#PrimaryBtn:hover {
-    background-color: #5A9375;
+    background-color: #047857;
 }
 QPushButton#AccentBtn {
-    background-color: #4B729E;
-    color: #FFFFFF;
-    border: 1px solid #5F8AB9;
+    background-color: #0C261E;
+    color: #34D399;
+    border: 1px solid #059669;
 }
 QPushButton#AccentBtn:hover {
-    background-color: #5882B2;
+    background-color: #059669;
+    color: #FFFFFF;
 }
 QPushButton#DangerBtn {
-    background-color: #5A2E2B;
-    color: #F2D7D5;
-    border: 1px solid #8A4A46;
+    background-color: #2A1215;
+    color: #FCA5A5;
+    border: 1px solid #991B1B;
 }
 QPushButton#DangerBtn:hover {
-    background-color: #6E3935;
+    background-color: #3B181C;
 }
 QPushButton#MiniPill {
     padding: 4px 9px;
     font-size: 11.5px;
-    border-radius: 6px;
-    background-color: #23252C;
+    border-radius: 5px;
+    background-color: #12171E;
+    border: 1px solid #222B36;
+}
+QPushButton#MiniPill:hover {
+    border-color: #059669;
+    color: #F8FAFC;
 }
 QPushButton:checked {
-    background-color: #4B729E;
-    border-color: #6E98C7;
+    background-color: #059669;
+    border-color: #10B981;
     color: #FFFFFF;
 }
 QPushButton#ProtectToggleOn {
-    background-color: #233E30;
-    color: #9ED4B6;
-    border: 1px solid #4D8065;
+    background-color: #0B261E;
+    color: #34D399;
+    border: 1px solid #059669;
     padding: 6px 14px;
 }
 QPushButton#ProtectToggleOn:hover {
-    background-color: #2A4B3A;
+    background-color: #059669;
+    color: #FFFFFF;
 }
 QPushButton#ProtectToggleOff {
-    background-color: #3A2C1D;
-    color: #DFBE82;
-    border: 1px solid #7D6234;
+    background-color: #261B0D;
+    color: #FBBF24;
+    border: 1px solid #92400E;
     padding: 6px 14px;
 }
 QToolButton {
     background: transparent;
     border: none;
-    color: #9A9EA8;
+    color: #94A3B8;
     font-weight: 600;
     padding: 4px 2px;
 }
 QToolButton:hover {
-    color: #EFEFE9;
+    color: #10B981;
 }
 QTabWidget::pane {
     border: none;
     background: transparent;
 }
 QTabBar::tab {
-    background-color: #1B1D22;
-    color: #9A9EA8;
-    border: 1px solid #2D3038;
-    border-bottom: none;
-    border-top-left-radius: 8px;
-    border-top-right-radius: 8px;
-    padding: 8px 16px;
-    margin-right: 4px;
+    background-color: #0D1116;
+    color: #94A3B8;
+    border: 1px solid #1E2630;
+    border-radius: 6px;
+    padding: 7px 14px;
+    margin-right: 6px;
     font-weight: 600;
 }
+QTabBar::tab:hover {
+    color: #F8FAFC;
+    border-color: #334155;
+}
 QTabBar::tab:selected {
-    background-color: #25282F;
-    color: #F4F4F0;
-    border-color: #4B729E;
+    background-color: #0B261E;
+    color: #34D399;
+    border: 1px solid #059669;
 }
 QSpinBox, QDoubleSpinBox, QComboBox, QLineEdit, QKeySequenceEdit, QKeySequenceEdit QLineEdit {
-    background-color: #141519;
-    border: 1px solid #343741;
+    background-color: #07090C;
+    border: 1px solid #242E3A;
     border-radius: 6px;
     padding: 5px 8px;
-    color: #F0F0EC;
+    color: #F8FAFC;
+}
+QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QKeySequenceEdit:focus {
+    border-color: #059669;
 }
 QComboBox::drop-down {
     border: none;
     width: 22px;
 }
 QComboBox QAbstractItemView, QListWidget, QMenu {
-    background-color: #16171B;
-    border: 1px solid #343741;
+    background-color: #0B0E12;
+    border: 1px solid #1E2630;
     border-radius: 6px;
-    color: #EFEFE9;
-    selection-background-color: #4B729E;
+    color: #E2E8F0;
+    selection-background-color: #059669;
     selection-color: #FFFFFF;
     outline: none;
 }
@@ -278,79 +308,73 @@ QListWidget::item {
     border-radius: 4px;
 }
 QListWidget::item:selected {
-    background-color: #4B729E;
+    background-color: #059669;
     color: #FFFFFF;
 }
 QMenu::item {
     padding: 6px 14px;
 }
 QMenu::item:selected {
-    background-color: #4B729E;
+    background-color: #059669;
 }
 QSlider::groove:horizontal {
     height: 5px;
-    background: #2C2F38;
+    background: #1E2630;
     border-radius: 2px;
 }
 QSlider::handle:horizontal {
-    background: #EFEFE9;
-    border: 1px solid #5F8AB9;
-    width: 15px;
-    height: 15px;
+    background: #F8FAFC;
+    border: 2px solid #059669;
+    width: 14px;
+    height: 14px;
     margin: -5px 0;
     border-radius: 7px;
 }
 QSlider::sub-page:horizontal {
-    background: #5680AD;
+    background: #059669;
     border-radius: 2px;
 }
 QProgressBar {
-    background-color: #141519;
-    border: 1px solid #2D3038;
-    border-radius: 6px;
+    background-color: #07090C;
+    border: 1px solid #1E2630;
+    border-radius: 5px;
     text-align: center;
     height: 15px;
     font-size: 11px;
+    color: #CBD5E1;
 }
 QProgressBar::chunk {
-    background-color: #4D8065;
-    border-radius: 5px;
+    background-color: #059669;
+    border-radius: 4px;
 }
 QPlainTextEdit {
-    background-color: #121316;
-    border: 1px solid #2D3038;
-    border-radius: 8px;
-    color: #B9BDC7;
+    background-color: #07090C;
+    border: 1px solid #1E2630;
+    border-radius: 6px;
+    color: #94A3B8;
     font-family: "JetBrains Mono", "Fira Code", monospace;
     font-size: 11px;
     padding: 8px;
 }
 QStatusBar {
-    background-color: #141519;
-    border-top: 1px solid #262930;
-    color: #9A9EA8;
+    background-color: #080A0D;
+    border-top: 1px solid #1E2630;
+    color: #94A3B8;
+    font-size: 12px;
 }
 """
 
 
 def _create_tray_icon() -> QIcon:
-    """Paint a crisp monochrome matte gamepad badge for the system tray."""
+    """Paint the crisp b7software geometric badge for the system tray & window."""
     pm = QPixmap(64, 64)
     pm.fill(Qt.transparent)
     p = QPainter(pm)
     p.setRenderHint(QPainter.Antialiasing, True)
-    p.setPen(QPen(QColor("#EFEFE9"), 3.0))
-    p.setBrush(QColor("#23262E"))
-    p.drawRoundedRect(QRectF(6, 16, 52, 32), 14, 14)
-    p.setPen(QPen(QColor("#548C6E"), 3.5))
-    p.drawPoint(QPointF(21, 32))
-    p.drawEllipse(QPointF(21, 32), 5, 5)
-    p.setPen(Qt.NoPen)
-    p.setBrush(QColor("#EFEFE9"))
-    p.drawEllipse(QPointF(44, 27), 2.8, 2.8)
-    p.drawEllipse(QPointF(44, 37), 2.8, 2.8)
-    p.drawEllipse(QPointF(39, 32), 2.8, 2.8)
-    p.drawEllipse(QPointF(49, 32), 2.8, 2.8)
+    p.setPen(QPen(QColor("#1E2630"), 2.0))
+    p.setBrush(QColor("#090B0E"))
+    p.drawRoundedRect(QRectF(4, 4, 56, 56), 11, 11)
+    QSvgRenderer(QByteArray(B7_MARK_SVG)).render(p, QRectF(12, 12, 40, 40))
     p.end()
     return QIcon(pm)
 
@@ -507,15 +531,16 @@ class MainWindow(QMainWindow):
             self.activateWindow()
 
     def _build_ui(self) -> None:
-        root = QWidget()
+        root = GridRootWidget()
         self.setCentralWidget(root)
         outer = QVBoxLayout(root)
-        outer.setContentsMargins(14, 14, 14, 10)
-        outer.setSpacing(12)
+        outer.setContentsMargins(14, 10, 14, 8)
+        outer.setSpacing(10)
 
         outer.addWidget(self._build_header())
 
         splitter = QSplitter(Qt.Horizontal)
+        splitter.setObjectName("PageCanvas")
         splitter.setChildrenCollapsible(False)
         splitter.addWidget(self._build_left_panel())
         splitter.addWidget(self._build_right_panel())
@@ -523,21 +548,26 @@ class MainWindow(QMainWindow):
         outer.addWidget(splitter, 1)
 
         self.setStatusBar(QStatusBar())
-        self.statusBar().showMessage("Listo. Conecta cualquier mando USB o Bluetooth.")
+        self.statusBar().showMessage("Listo · Conecta cualquier mando USB o Bluetooth.")
 
     def _build_header(self) -> QFrame:
         bar = QFrame()
         bar.setObjectName("HeaderBar")
         lay = QHBoxLayout(bar)
-        lay.setContentsMargins(16, 11, 16, 11)
-        lay.setSpacing(10)
+        lay.setContentsMargins(14, 8, 14, 8)
+        lay.setSpacing(12)
+
+        lay.addWidget(B7MarkWidget(34))
 
         title_col = QVBoxLayout()
-        title_col.setSpacing(2)
-        title = QLabel("Anti-Drift Studio")
+        title_col.setSpacing(1)
+        title = QLabel(
+            "Anti-Drift Studio <span style='color:#059669;'>■</span>"
+        )
+        title.setTextFormat(Qt.RichText)
         title.setObjectName("Title")
-        sub = QLabel("Calibración universal, baja latencia y perfiles por juego")
-        sub.setObjectName("Subtitle")
+        sub = QLabel("B7 SOFTWARE  ·  CONTROLADOR, MACROS Y CLIPS INSTANTÁNEOS")
+        sub.setObjectName("BrandTag")
         title_col.addWidget(title)
         title_col.addWidget(sub)
         lay.addLayout(title_col)
@@ -555,6 +585,7 @@ class MainWindow(QMainWindow):
 
     def _build_left_panel(self) -> QWidget:
         panel = QWidget()
+        panel.setObjectName("PageCanvas")
         lay = QVBoxLayout(panel)
         lay.setContentsMargins(0, 0, 6, 0)
         lay.setSpacing(10)
@@ -573,8 +604,9 @@ class MainWindow(QMainWindow):
 
         self._hz_badge = QLabel("0 Hz")
         self._hz_badge.setStyleSheet(
-            "background-color: #141519; border: 1px solid #2D3038; "
-            "border-radius: 6px; padding: 3px 8px; color: #9A9EA8; font-size: 11.5px; font-weight: 600;"
+            "background-color: #07090C; border: 1px solid #1E2630; "
+            "border-radius: 5px; padding: 3px 8px; color: #10B981; "
+            "font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 700;"
         )
         self._hz_badge.setToolTip("Frecuencia real de reporte del mando en Hz")
         top_row.addWidget(self._hz_badge)
@@ -593,9 +625,9 @@ class MainWindow(QMainWindow):
         c_lay.addWidget(self._controller_widget, 1)
 
         legend = QLabel(
-            "● <span style='color:#C86A63;'>Coral</span>: entrada real &nbsp;&nbsp;·&nbsp;&nbsp;"
-            "● <span style='color:#639E7E;'>Verde</span>: salida limpia al juego &nbsp;&nbsp;·&nbsp;&nbsp;"
-            "▢ <span style='color:#C59B57;'>Dorado</span>: zona muerta"
+            "<span style='color:#F43F5E;'>● Entrada real</span> &nbsp;&nbsp;·&nbsp;&nbsp;"
+            "<span style='color:#10B981;'>● Salida limpia</span> &nbsp;&nbsp;·&nbsp;&nbsp;"
+            "<span style='color:#34D399;'>▢ Zona muerta</span>"
         )
         legend.setAlignment(Qt.AlignCenter)
         legend.setObjectName("MutedNote")
@@ -607,8 +639,8 @@ class MainWindow(QMainWindow):
         self._active_buttons_label.setWordWrap(True)
         self._active_buttons_label.setAlignment(Qt.AlignCenter)
         self._active_buttons_label.setStyleSheet(
-            "background-color: #141519; border: 1px solid #2A2D35; "
-            "border-radius: 7px; padding: 8px 10px; font-weight: 600; color: #D8D8D2;"
+            "background-color: #07090C; border: 1px solid #1E2630; "
+            "border-radius: 6px; padding: 8px 10px; font-weight: 600; color: #E2E8F0;"
         )
         c_lay.addWidget(self._active_buttons_label)
 
@@ -617,6 +649,7 @@ class MainWindow(QMainWindow):
 
     def _build_right_panel(self) -> QWidget:
         wrapper = QWidget()
+        wrapper.setObjectName("PageCanvas")
         w_lay = QVBoxLayout(wrapper)
         w_lay.setContentsMargins(6, 0, 0, 0)
         w_lay.setSpacing(8)
@@ -1651,16 +1684,16 @@ class MainWindow(QMainWindow):
         ):
             if not connected:
                 ctrl.status_badge.setText("Sin señal")
-                ctrl.status_badge.setStyleSheet("color: #9A9EA8; font-size: 11.5px;")
+                ctrl.status_badge.setStyleSheet("color: #64748B; font-size: 11.5px;")
             elif abs(ox) < 250 and abs(oy) < 250:
                 ctrl.status_badge.setText("✓ Estable en centro")
                 ctrl.status_badge.setStyleSheet(
-                    "color: #639E7E; font-weight: 600; font-size: 11.5px;"
+                    "color: #10B981; font-weight: 600; font-size: 11.5px;"
                 )
             else:
                 ctrl.status_badge.setText("↗ En movimiento")
                 ctrl.status_badge.setStyleSheet(
-                    "color: #C59B57; font-weight: 600; font-size: 11.5px;"
+                    "color: #FBBF24; font-weight: 600; font-size: 11.5px;"
                 )
 
         lt_pct = round((max(0, state.lt) / 1023.0) * 100.0)

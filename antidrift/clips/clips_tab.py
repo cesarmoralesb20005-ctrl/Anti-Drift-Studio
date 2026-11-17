@@ -586,13 +586,13 @@ class ClipsTabWidget(QWidget):
 
     def _set_feedback(self, text: str, level: str = "muted") -> None:
         colors = {
-            "muted": "#9A9EA8",
-            "ok": "#8FC7A7",
-            "warn": "#DFBE82",
-            "err": "#E28E88",
+            "muted": "#94A3B8",
+            "ok": "#34D399",
+            "warn": "#FBBF24",
+            "err": "#F87171",
         }
         self._rec_status_lbl.setStyleSheet(
-            f"color: {colors.get(level, '#9A9EA8')}; font-weight: {'600' if level != 'muted' else '400'};"
+            f"color: {colors.get(level, '#94A3B8')}; font-weight: {'600' if level != 'muted' else '400'};"
         )
         self._rec_status_lbl.setText(text)
 

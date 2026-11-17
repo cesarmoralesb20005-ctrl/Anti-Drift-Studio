@@ -101,25 +101,25 @@ class StickPlotWidget(QWidget):
         p.setRenderHint(QPainter.Antialiasing, True)
         rect = self._plot_rect()
 
-        p.setPen(QPen(QColor("#32353E"), 1.3))
-        p.setBrush(QColor("#121316"))
-        p.drawRoundedRect(rect, 9, 9)
+        p.setPen(QPen(QColor("#1E2630"), 1.3))
+        p.setBrush(QColor("#07090C"))
+        p.drawRoundedRect(rect, 7, 7)
 
         zero = self._axis_to_px(0, 0, rect)
-        p.setPen(QPen(QColor(154, 158, 168, 45), 1.0, Qt.DotLine))
+        p.setPen(QPen(QColor(148, 163, 184, 38), 1.0, Qt.DotLine))
         p.drawLine(QPointF(rect.left() + 4, zero.y()), QPointF(rect.right() - 4, zero.y()))
         p.drawLine(QPointF(zero.x(), rect.top() + 4), QPointF(zero.x(), rect.bottom() - 4))
 
         # Circular boundary (shrinks visually when outer_comp > 0)
         outer_r = rect.width() * 0.46
-        p.setPen(QPen(QColor(107, 111, 121, 70), 1.0))
+        p.setPen(QPen(QColor(100, 116, 139, 80), 1.0))
         p.setBrush(Qt.NoBrush)
         p.drawEllipse(rect.center(), outer_r, outer_r)
 
         cpx = self._axis_to_px(self._center_x, self._center_y, rect)
         if self._outer_comp > 0.005:
             reach_r = outer_r * (1.0 - self._outer_comp)
-            p.setPen(QPen(QColor(86, 128, 173, 150), 1.0, Qt.DashLine))
+            p.setPen(QPen(QColor(56, 189, 248, 155), 1.0, Qt.DashLine))
             p.drawEllipse(cpx, reach_r, reach_r)
 
         min_x, max_x = deadzone_raw_bounds(self._center_x, self._dz)
@@ -132,40 +132,40 @@ class StickPlotWidget(QWidget):
             ry = max(3.0, (br.y() - tl.y()) * 0.5)
             if self._dz_mode == "hybrid":
                 p.setPen(Qt.NoPen)
-                p.setBrush(QColor(197, 155, 87, 16))
+                p.setBrush(QColor(16, 185, 129, 14))
                 band_rx = rx * 0.40
                 band_ry = ry * 0.40
                 p.drawRect(QRectF(cpx.x() - band_rx, rect.top() + 1, band_rx * 2.0, rect.height() - 2))
                 p.drawRect(QRectF(rect.left() + 1, cpx.y() - band_ry, rect.width() - 2, band_ry * 2.0))
-            p.setPen(QPen(QColor(197, 155, 87, 185), 1.1, Qt.DashLine))
-            p.setBrush(QColor(197, 155, 87, 36))
+            p.setPen(QPen(QColor(16, 185, 129, 175), 1.1, Qt.DashLine))
+            p.setBrush(QColor(5, 150, 105, 32))
             p.drawEllipse(cpx, rx, ry)
         else:
             p.setPen(Qt.NoPen)
-            p.setBrush(QColor(197, 155, 87, 18))
+            p.setBrush(QColor(5, 150, 105, 14))
             p.drawRect(QRectF(tl.x(), rect.top() + 1, br.x() - tl.x(), rect.height() - 2))
             p.drawRect(QRectF(rect.left() + 1, tl.y(), rect.width() - 2, br.y() - tl.y()))
-            p.setPen(QPen(QColor(197, 155, 87, 175), 1.1, Qt.DashLine))
-            p.setBrush(QColor(197, 155, 87, 36))
+            p.setPen(QPen(QColor(16, 185, 129, 165), 1.1, Qt.DashLine))
+            p.setBrush(QColor(5, 150, 105, 32))
             p.drawRect(QRectF(tl, br))
 
-        p.setPen(QPen(QColor("#C59B57"), 1.4))
+        p.setPen(QPen(QColor("#10B981"), 1.4))
         p.drawLine(QPointF(cpx.x() - 5, cpx.y()), QPointF(cpx.x() + 5, cpx.y()))
         p.drawLine(QPointF(cpx.x(), cpx.y() - 5), QPointF(cpx.x(), cpx.y() + 5))
 
         opx = self._axis_to_px(self._out_x, self._out_y, rect)
-        p.setPen(QPen(QColor("#548C6E"), 1.6))
-        p.setBrush(QColor(84, 140, 110, 110))
+        p.setPen(QPen(QColor("#10B981"), 1.6))
+        p.setBrush(QColor(5, 150, 105, 125))
         p.drawEllipse(opx, 6.0, 6.0)
 
         if self._connected:
             rpx = self._axis_to_px(self._raw_x, self._raw_y, rect)
-            p.setPen(QPen(QColor("#E3918B"), 1.2))
-            p.setBrush(QColor("#C86A63"))
+            p.setPen(QPen(QColor("#FB7185"), 1.2))
+            p.setBrush(QColor("#F43F5E"))
             p.drawEllipse(rpx, 4.0, 4.0)
 
-        p.setPen(QColor("#9A9EA8"))
-        p.setFont(QFont("Sans Serif", 8, QFont.Bold))
+        p.setPen(QColor("#94A3B8"))
+        p.setFont(QFont("JetBrains Mono", 8, QFont.Bold))
         p.drawText(
             QRectF(rect.left() + 7, rect.top() + 5, rect.width() - 14, 16),
             Qt.AlignLeft | Qt.AlignTop,
