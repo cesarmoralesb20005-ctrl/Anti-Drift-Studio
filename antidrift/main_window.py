@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from PySide6.QtCore import QByteArray, QPointF, QRectF, QThread, QTimer, Qt, Signal
-from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPen, QPixmap
+from PySide6.QtCore import QByteArray, QPointF, QRectF, QThread, QTimer, QUrl, Qt, Signal
+from PySide6.QtGui import QAction, QColor, QDesktopServices, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
     QApplication,
@@ -64,6 +64,15 @@ from .service_ctrl import (
     get_service_logs,
     get_service_status,
     run_service_action,
+)
+from .updater import (
+    UpdateCheckResult,
+    apply_update,
+    check_for_updates,
+    get_local_commit_sha,
+    read_local_app_version,
+    resolve_github_target,
+    restart_application,
 )
 from .widgets.circularity_dialog import CircularityTestDialog
 from .widgets.controller_widget import ControllerWidget
@@ -395,6 +404,29 @@ class _DepsInstallThread(QThread):
         self.finished_install.emit(ok, msg)
 
 
+class _UpdateCheckThread(QThread):
+    checked = Signal(object)
+
+    def run(self) -> None:
+        self.checked.emit(check_for_updates())
+
+
+class _UpdateApplyThread(QThread):
+    progress = Signal(str)
+    finished_update = Signal(bool, str, bool)
+
+    def __init__(self, remote_sha: str = "", parent=None) -> None:
+        super().__init__(parent)
+        self._remote_sha = remote_sha
+
+    def run(self) -> None:
+        ok, msg, restart_rec = apply_update(
+            progress_cb=self.progress.emit,
+            remote_sha=self._remote_sha,
+        )
+        self.finished_update.emit(ok, msg, restart_rec)
+
+
 @dataclass
 class _StickSimpleControls:
     plot: StickPlotWidget
@@ -452,11 +484,15 @@ class MainWindow(QMainWindow):
         self._profile_watch_timer.setInterval(2500)
         self._profile_watch_timer.timeout.connect(self._check_auto_game_profile)
 
+        self._last_update_result: UpdateCheckResult | None = None
+        self._upd_check_manual = False
+
         if start_reader:
             self._reader.start()
             self._status_timer.start()
             self._profile_watch_timer.start()
             QTimer.singleShot(800, self._start_deps_check)
+            QTimer.singleShot(1400, self._start_update_check)
 
     def closeEvent(self, event) -> None:
         if (
@@ -572,6 +608,13 @@ class MainWindow(QMainWindow):
         title_col.addWidget(sub)
         lay.addLayout(title_col)
         lay.addStretch(1)
+
+        self._update_btn = QPushButton("↑ Actualizar disponible")
+        self._update_btn.setObjectName("PrimaryBtn")
+        self._update_btn.setVisible(False)
+        self._update_btn.setToolTip("Hay una actualización en GitHub. Haz clic para instalarla.")
+        self._update_btn.clicked.connect(self._on_apply_update_clicked)
+        lay.addWidget(self._update_btn)
 
         self._hw_pill = QLabel("Buscando mando...")
         self._hw_pill.setObjectName("PillOff")
@@ -1141,6 +1184,68 @@ class MainWindow(QMainWindow):
         btn_row.addStretch(1)
         h_lay.addLayout(btn_row)
         lay.addWidget(health_card)
+
+        # Card: GitHub Update Manager
+        upd_card = QFrame()
+        upd_card.setObjectName("Card")
+        u_lay = QVBoxLayout(upd_card)
+        u_lay.setContentsMargins(14, 12, 14, 12)
+        u_lay.setSpacing(8)
+
+        u_title = QLabel("Actualizaciones (GitHub)")
+        u_title.setObjectName("SectionTitle")
+        u_lay.addWidget(u_title)
+
+        gh_target = resolve_github_target()
+        local_ver = read_local_app_version()
+        local_sha = get_local_commit_sha()
+        short_sha = local_sha[:7] if local_sha else "—"
+
+        self._upd_repo_lbl = QLabel(
+            f"Repositorio: {gh_target.owner}/{gh_target.repo} · rama {gh_target.branch} "
+            f"· versión instalada v{local_ver} ({short_sha})"
+        )
+        self._upd_repo_lbl.setWordWrap(True)
+        self._upd_repo_lbl.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self._upd_repo_lbl.setStyleSheet("color: #94A3B8; font-size: 12px;")
+        u_lay.addWidget(self._upd_repo_lbl)
+
+        self._upd_status_lbl = QLabel("Estado: Comprobación automática al iniciar o bajo demanda.")
+        self._upd_status_lbl.setWordWrap(True)
+        self._upd_status_lbl.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self._upd_status_lbl.setStyleSheet("color: #CFD2DA; font-size: 12.5px;")
+        u_lay.addWidget(self._upd_status_lbl)
+
+        self._upd_changes_lbl = QLabel("")
+        self._upd_changes_lbl.setWordWrap(True)
+        self._upd_changes_lbl.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self._upd_changes_lbl.setStyleSheet(
+            "background-color: #07090C; border: 1px solid #1E2630; border-radius: 6px; "
+            "padding: 8px 10px; color: #94A3B8; font-family: 'JetBrains Mono', monospace; font-size: 11px;"
+        )
+        self._upd_changes_lbl.setVisible(False)
+        u_lay.addWidget(self._upd_changes_lbl)
+
+        u_btn_row = QHBoxLayout()
+        self._btn_check_updates = QPushButton("Buscar actualizaciones")
+        self._btn_check_updates.clicked.connect(lambda: self._start_update_check(manual=True))
+        u_btn_row.addWidget(self._btn_check_updates)
+
+        self._btn_apply_update = QPushButton("Actualizar ahora")
+        self._btn_apply_update.setObjectName("PrimaryBtn")
+        self._btn_apply_update.setVisible(False)
+        self._btn_apply_update.clicked.connect(self._on_apply_update_clicked)
+        u_btn_row.addWidget(self._btn_apply_update)
+
+        btn_open_gh = QPushButton("Abrir GitHub")
+        btn_open_gh.setObjectName("MiniPill")
+        btn_open_gh.clicked.connect(
+            lambda: QDesktopServices.openUrl(QUrl(resolve_github_target().repo_url))
+        )
+        u_btn_row.addWidget(btn_open_gh)
+        u_btn_row.addStretch(1)
+        u_lay.addLayout(u_btn_row)
+        lay.addWidget(upd_card)
 
         self._logs_toggle = QToolButton()
         self._logs_toggle.setText("▸ Ver registro técnico (solo soporte)")
@@ -1879,3 +1984,140 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(msg, 5000)
         else:
             QMessageBox.warning(self, "Dependencias", msg)
+
+    # ── GitHub Update Manager ──
+
+    def _start_update_check(self, manual: bool = False) -> None:
+        if getattr(self, "_upd_check_thread", None) is not None:
+            return
+        self._upd_check_manual = manual
+        self._btn_check_updates.setEnabled(False)
+        self._upd_status_lbl.setText("Estado: Consultando GitHub en busca de actualizaciones...")
+        th = _UpdateCheckThread(self)
+        th.checked.connect(self._on_update_checked)
+        self._upd_check_thread = th
+        th.start()
+
+    def _on_update_checked(self, result: UpdateCheckResult) -> None:
+        self._upd_check_thread = None
+        self._btn_check_updates.setEnabled(True)
+        self._last_update_result = result
+
+        self._upd_repo_lbl.setText(
+            f"Repositorio: {result.repo_url.removeprefix('https://github.com/')} · "
+            f"rama {result.branch} · instalado v{result.local_version} ({result.local_short_sha})"
+        )
+
+        if result.error:
+            self._update_btn.setVisible(False)
+            self._btn_apply_update.setVisible(False)
+            self._upd_changes_lbl.setVisible(False)
+            self._upd_status_lbl.setText(f"Estado: ⚠ {result.error}")
+            self._upd_status_lbl.setStyleSheet("color: #FBBF24; font-size: 12.5px;")
+            if self._upd_check_manual:
+                self.statusBar().showMessage(result.error, 5000)
+            return
+
+        if result.update_available:
+            count_txt = f" ({result.ahead_by} cambios)" if result.ahead_by > 1 else ""
+            ver_tag = f" {result.remote_tag} ·" if result.remote_tag else ""
+            self._update_btn.setText(f"↑ Actualizar disponible{count_txt}")
+            self._update_btn.setVisible(True)
+            self._btn_apply_update.setText(f"Actualizar ahora ({result.remote_short_sha})")
+            self._btn_apply_update.setVisible(True)
+
+            headline = result.remote_message or "Nueva versión en GitHub"
+            self._upd_status_lbl.setText(
+                f"Estado: ↑ Actualización disponible ·{ver_tag} {result.remote_short_sha} — {headline}"
+            )
+            self._upd_status_lbl.setStyleSheet("color: #34D399; font-size: 12.5px; font-weight: 600;")
+
+            if result.commits:
+                self._upd_changes_lbl.setText("\n".join(result.commits))
+                self._upd_changes_lbl.setVisible(True)
+            else:
+                self._upd_changes_lbl.setVisible(False)
+
+            self.statusBar().showMessage(
+                f"Nueva actualización disponible en GitHub ({result.remote_short_sha}).",
+                6000,
+            )
+        else:
+            self._update_btn.setVisible(False)
+            self._btn_apply_update.setVisible(False)
+            self._upd_changes_lbl.setVisible(False)
+            tail = f" ({result.remote_short_sha})" if result.remote_sha else ""
+            self._upd_status_lbl.setText(f"Estado: ✓ Estás al día con GitHub{tail}.")
+            self._upd_status_lbl.setStyleSheet("color: #34D399; font-size: 12.5px;")
+            if self._upd_check_manual:
+                self.statusBar().showMessage("Anti-Drift Studio ya está en la última versión.", 4000)
+
+    def _on_apply_update_clicked(self) -> None:
+        if getattr(self, "_upd_apply_thread", None) is not None:
+            return
+        res = self._last_update_result
+        if res is None or not res.update_available:
+            self._start_update_check(manual=True)
+            return
+
+        details = "\n".join(f"  • {c}" for c in res.commits) if res.commits else (
+            f"  • {res.remote_short_sha} — {res.remote_message}"
+        )
+        ans = QMessageBox.question(
+            self,
+            "Actualizar Anti-Drift Studio",
+            f"Se encontró una actualización en GitHub ({res.branch}):\n\n"
+            f"Actual: {res.local_short_sha}  →  Nuevo: {res.remote_short_sha}\n\n"
+            f"Cambios recientes:\n{details}\n\n"
+            "¿Descargar y aplicar la actualización ahora?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        if ans != QMessageBox.Yes:
+            return
+
+        self._update_btn.setEnabled(False)
+        self._btn_apply_update.setEnabled(False)
+        self._btn_check_updates.setEnabled(False)
+        self._upd_status_lbl.setText("Estado: Descargando e instalando actualización...")
+        self._upd_status_lbl.setStyleSheet("color: #CFD2DA; font-size: 12.5px;")
+
+        th = _UpdateApplyThread(remote_sha=res.remote_sha, parent=self)
+        th.progress.connect(self._on_update_progress)
+        th.finished_update.connect(self._on_update_applied)
+        self._upd_apply_thread = th
+        th.start()
+
+    def _on_update_progress(self, msg: str) -> None:
+        self._upd_status_lbl.setText(f"Estado: {msg}")
+        self.statusBar().showMessage(msg, 4000)
+
+    def _on_update_applied(self, ok: bool, msg: str, restart_rec: bool) -> None:
+        self._upd_apply_thread = None
+        self._update_btn.setEnabled(True)
+        self._btn_apply_update.setEnabled(True)
+        self._btn_check_updates.setEnabled(True)
+
+        if not ok:
+            self._upd_status_lbl.setText(f"Estado: ⚠ {msg}")
+            self._upd_status_lbl.setStyleSheet("color: #FCA5A5; font-size: 12.5px;")
+            QMessageBox.warning(self, "Actualización", msg)
+            return
+
+        self._update_btn.setVisible(False)
+        self._btn_apply_update.setVisible(False)
+        self._upd_changes_lbl.setVisible(False)
+        self._upd_status_lbl.setText(f"Estado: ✓ {msg}")
+        self._upd_status_lbl.setStyleSheet("color: #34D399; font-size: 12.5px;")
+        self.statusBar().showMessage(msg, 6000)
+
+        if restart_rec:
+            ans = QMessageBox.question(
+                self,
+                "Actualización completada",
+                f"{msg}\n\n¿Reiniciar Anti-Drift Studio ahora para cargar la nueva versión?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
+            )
+            if ans == QMessageBox.Yes and restart_application():
+                self._quit_completely()

@@ -324,6 +324,40 @@ class ServiceAndUiTests(unittest.TestCase):
             ctab._scroll.viewport().width() + 2,
         )
 
+        # Verify GitHub update manager UI button visibility toggles properly
+        from antidrift.updater import UpdateCheckResult
+
+        self.assertTrue(win._update_btn.isHidden())
+        self.assertTrue(win._btn_apply_update.isHidden())
+        win._on_update_checked(
+            UpdateCheckResult(
+                update_available=True,
+                local_version="1.0.0",
+                local_sha="1111111abcdef",
+                remote_sha="2222222abcdef",
+                remote_message="feat: nueva mejora",
+                ahead_by=2,
+                commits=["2222222 · feat: nueva mejora", "3333333 · fix: detalle"],
+            )
+        )
+        self._app.processEvents()
+        self.assertTrue(win._update_btn.isVisible())
+        self.assertFalse(win._btn_apply_update.isHidden())
+        self.assertFalse(win._upd_changes_lbl.isHidden())
+        self.assertIn("Actualizar disponible", win._update_btn.text())
+
+        win._on_update_checked(
+            UpdateCheckResult(
+                update_available=False,
+                local_version="1.0.0",
+                local_sha="2222222abcdef",
+                remote_sha="2222222abcdef",
+            )
+        )
+        self._app.processEvents()
+        self.assertTrue(win._update_btn.isHidden())
+        self.assertTrue(win._btn_apply_update.isHidden())
+
         win.close()
 
 
@@ -478,6 +512,131 @@ class ClipsSubsystemTests(unittest.TestCase):
             detect_controller_family("Generic USB Gamepad", "1234:5678"),
             "xbox",
         )
+
+
+class UpdaterTests(unittest.TestCase):
+    def test_github_url_version_and_api_checks(self) -> None:
+        from antidrift.updater import (
+            check_for_updates,
+            is_newer_version,
+            parse_github_remote_url,
+        )
+
+        self.assertEqual(
+            parse_github_remote_url("https://github.com/user1/Repo-Test.git"),
+            ("user1", "Repo-Test"),
+        )
+        self.assertEqual(
+            parse_github_remote_url("git@github.com:user1/Repo-Test.git"),
+            ("user1", "Repo-Test"),
+        )
+        self.assertTrue(is_newer_version("v1.2.0", "1.0.9"))
+        self.assertFalse(is_newer_version("v1.0.0", "1.0.0"))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "pyproject.toml").write_text('version = "1.0.0"\n', encoding="utf-8")
+            stamp = root / "stamp.txt"
+            stamp.write_text("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n", encoding="utf-8")
+
+            def _mock_fetch_ahead(url: str, _timeout: float):
+                if url.endswith("/releases/latest"):
+                    raise RuntimeError("404")
+                if "/commits/" in url:
+                    return {
+                        "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                        "commit": {
+                            "message": "feat: add update check\nextended body",
+                            "committer": {"date": "2026-11-17T06:00:00Z"},
+                        },
+                    }
+                if "/compare/" in url:
+                    return {
+                        "status": "ahead",
+                        "ahead_by": 2,
+                        "commits": [
+                            {"sha": "cccccccc", "commit": {"message": "fix: first"}},
+                            {"sha": "bbbbbbbb", "commit": {"message": "feat: add update check"}},
+                        ],
+                    }
+                return {}
+
+            res = check_for_updates(
+                project_root=root,
+                stamp_path=stamp,
+                fetcher=_mock_fetch_ahead,
+            )
+            self.assertTrue(res.update_available)
+            self.assertEqual(res.ahead_by, 2)
+            self.assertEqual(res.remote_short_sha, "bbbbbbb")
+            self.assertEqual(res.commits[0], "bbbbbbb · feat: add update check")
+
+            # Local ahead of GitHub ('behind' in compare/{local}...{remote}) must NOT flag update
+            def _mock_fetch_local_ahead(url: str, _timeout: float):
+                if url.endswith("/releases/latest"):
+                    raise RuntimeError("404")
+                if "/commits/" in url:
+                    return {
+                        "sha": "1111111111111111111111111111111111111111",
+                        "commit": {"message": "old remote commit"},
+                    }
+                if "/compare/" in url:
+                    return {"status": "behind", "ahead_by": 0}
+                return {}
+
+            res2 = check_for_updates(
+                project_root=root,
+                stamp_path=stamp,
+                fetcher=_mock_fetch_local_ahead,
+            )
+            self.assertFalse(res2.update_available)
+
+    def test_git_clone_check_and_apply_update(self) -> None:
+        import subprocess
+        from antidrift.updater import apply_update, check_for_updates
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            remote = base / "remote.git"
+            work = base / "work"
+            client = base / "client"
+
+            git_env = {
+                **os.environ,
+                "GIT_AUTHOR_NAME": "Test",
+                "GIT_AUTHOR_EMAIL": "test@example.com",
+                "GIT_COMMITTER_NAME": "Test",
+                "GIT_COMMITTER_EMAIL": "test@example.com",
+            }
+            subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+            subprocess.run(["git", "clone", str(remote), str(work)], check=True, capture_output=True)
+            subprocess.run(["git", "-C", str(work), "checkout", "-b", "main"], check=True, capture_output=True)
+            (work / "pyproject.toml").write_text('version = "1.0.0"\n', encoding="utf-8")
+            subprocess.run(["git", "-C", str(work), "add", "."], check=True, capture_output=True)
+            subprocess.run(["git", "-C", str(work), "commit", "-m", "initial"], check=True, env=git_env, capture_output=True)
+            subprocess.run(["git", "-C", str(work), "push", "-u", "origin", "main"], check=True, capture_output=True)
+
+            subprocess.run(["git", "clone", "-b", "main", str(remote), str(client)], check=True, capture_output=True)
+
+            # Push a new commit to remote from work
+            (work / "pyproject.toml").write_text('version = "1.1.0"\n', encoding="utf-8")
+            subprocess.run(["git", "-C", str(work), "commit", "-am", "feat: version 1.1.0"], check=True, env=git_env, capture_output=True)
+            subprocess.run(["git", "-C", str(work), "push", "origin", "main"], check=True, capture_output=True)
+
+            # Check via git fallback (offline HTTP fetcher)
+            res = check_for_updates(
+                project_root=client,
+                fetcher=lambda _u, _t: (_ for _ in ()).throw(RuntimeError("offline")),
+            )
+            self.assertTrue(res.update_available)
+            self.assertEqual(res.ahead_by, 1)
+            self.assertIn("feat: version 1.1.0", res.remote_message)
+
+            # Apply update
+            ok, msg, restart_rec = apply_update(project_root=client)
+            self.assertTrue(ok, msg)
+            self.assertTrue(restart_rec)
+            self.assertIn('version = "1.1.0"', (client / "pyproject.toml").read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":
