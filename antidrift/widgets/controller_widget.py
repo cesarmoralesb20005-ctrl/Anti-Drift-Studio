@@ -44,66 +44,66 @@ class _ControllerLayoutSpec:
 _SPECS: dict[str, _ControllerLayoutSpec] = {
     "xbox": _ControllerLayoutSpec(
         family="xbox",
-        l_stick=QPointF(176.0, 188.0),
-        r_stick=QPointF(386.0, 262.0),
-        dpad=QPointF(236.0, 264.0),
-        face_center=QPointF(446.0, 188.0),
-        guide=QPointF(310.0, 148.0),
-        view=QPointF(268.0, 188.0),
-        menu=QPointF(352.0, 188.0),
-        lb_rect=QRectF(112, 82, 118, 28),
-        rb_rect=QRectF(390, 82, 118, 28),
-        lt_rect=QRectF(128, 24, 86, 42),
-        rt_rect=QRectF(406, 24, 86, 42),
+        l_stick=QPointF(166.0, 194.0),
+        r_stick=QPointF(374.0, 278.0),
+        dpad=QPointF(226.0, 278.0),
+        face_center=QPointF(434.0, 194.0),
+        guide=QPointF(300.0, 148.0),
+        view=QPointF(256.0, 194.0),
+        menu=QPointF(344.0, 194.0),
+        lb_rect=QRectF(112, 62, 114, 26),
+        rb_rect=QRectF(374, 62, 114, 26),
+        lt_rect=QRectF(124, 14, 86, 38),
+        rt_rect=QRectF(390, 14, 86, 38),
         trigger_labels=("LT", "RT"),
         bumper_labels=("LB", "RB"),
     ),
     "playstation": _ControllerLayoutSpec(
         family="playstation",
-        l_stick=QPointF(234.0, 264.0),
-        r_stick=QPointF(386.0, 264.0),
-        dpad=QPointF(166.0, 188.0),
-        face_center=QPointF(454.0, 188.0),
-        guide=QPointF(310.0, 214.0),
-        view=QPointF(222.0, 134.0),
-        menu=QPointF(398.0, 134.0),
-        lb_rect=QRectF(110, 82, 116, 28),
-        rb_rect=QRectF(394, 82, 116, 28),
-        lt_rect=QRectF(126, 24, 86, 42),
-        rt_rect=QRectF(408, 24, 86, 42),
+        l_stick=QPointF(228.0, 276.0),
+        r_stick=QPointF(372.0, 276.0),
+        dpad=QPointF(160.0, 192.0),
+        face_center=QPointF(440.0, 192.0),
+        guide=QPointF(300.0, 212.0),
+        view=QPointF(214.0, 128.0),
+        menu=QPointF(386.0, 128.0),
+        lb_rect=QRectF(110, 62, 114, 26),
+        rb_rect=QRectF(376, 62, 114, 26),
+        lt_rect=QRectF(122, 14, 86, 38),
+        rt_rect=QRectF(392, 14, 86, 38),
         trigger_labels=("L2", "R2"),
         bumper_labels=("L1", "R1"),
-        touchpad_rect=QRectF(244, 114, 132, 68),
+        touchpad_rect=QRectF(236, 106, 128, 70),
     ),
     "nintendo_pro": _ControllerLayoutSpec(
         family="nintendo_pro",
-        l_stick=QPointF(178.0, 186.0),
-        r_stick=QPointF(384.0, 260.0),
-        dpad=QPointF(236.0, 262.0),
-        face_center=QPointF(446.0, 186.0),
-        guide=QPointF(336.0, 194.0),
-        view=QPointF(256.0, 152.0),
-        menu=QPointF(364.0, 152.0),
-        lb_rect=QRectF(118, 82, 116, 28),
-        rb_rect=QRectF(386, 82, 116, 28),
-        lt_rect=QRectF(132, 24, 86, 42),
-        rt_rect=QRectF(402, 24, 86, 42),
+        l_stick=QPointF(170.0, 190.0),
+        r_stick=QPointF(372.0, 276.0),
+        dpad=QPointF(228.0, 276.0),
+        face_center=QPointF(430.0, 190.0),
+        guide=QPointF(324.0, 198.0),
+        view=QPointF(248.0, 150.0),
+        menu=QPointF(352.0, 150.0),
+        lb_rect=QRectF(118, 62, 112, 26),
+        rb_rect=QRectF(370, 62, 112, 26),
+        lt_rect=QRectF(128, 14, 86, 38),
+        rt_rect=QRectF(386, 14, 86, 38),
         trigger_labels=("ZL", "ZR"),
         bumper_labels=("L", "R"),
     ),
     "joycon": _ControllerLayoutSpec(
         family="joycon",
-        l_stick=QPointF(165.0, 188.0),
-        r_stick=QPointF(455.0, 266.0),
-        dpad=QPointF(165.0, 268.0),
-        face_center=QPointF(455.0, 188.0),
-        guide=QPointF(434.0, 326.0),
-        view=QPointF(196.0, 138.0),
-        menu=QPointF(424.0, 138.0),
-        lb_rect=QRectF(112, 82, 108, 28),
-        rb_rect=QRectF(400, 82, 108, 28),
-        lt_rect=QRectF(122, 24, 88, 42),
-        rt_rect=QRectF(410, 24, 88, 42),
+        l_stick=QPointF(164.0, 188.0),
+        r_stick=QPointF(436.0, 284.0),
+        dpad=QPointF(164.0, 284.0),
+        face_center=QPointF(436.0, 188.0),
+        guide=QPointF(412.0, 352.0),
+        view=QPointF(194.0, 134.0),
+        menu=QPointF(406.0, 134.0),
+        lb_rect=QRectF(110, 62, 108, 26),
+        rb_rect=QRectF(382, 62, 108, 26),
+        lt_rect=QRectF(120, 14, 86, 38),
+        rt_rect=QRectF(394, 14, 86, 38),
         trigger_labels=("ZL", "ZR"),
         bumper_labels=("L", "R"),
     ),
@@ -115,12 +115,12 @@ class ControllerWidget(QWidget):
 
     simulated_state_changed = Signal(object)
 
-    LOGICAL_W = 620.0
-    LOGICAL_H = 446.0
+    LOGICAL_W = 600.0
+    LOGICAL_H = 492.0
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
-        self.setMinimumSize(430, 305)
+        self.setMinimumSize(400, 325)
         self._state = ControllerState()
         self._config = AntiDriftConfig()
         self._simulator_enabled = False
@@ -256,7 +256,7 @@ class ControllerWidget(QWidget):
         gap = 8.0
         total_w = len(codes) * badge_w + (len(codes) - 1) * gap
         start_x = (self.LOGICAL_W - total_w) * 0.5
-        y = 414.0
+        y = 454.0
         return [
             (code, QRectF(start_x + idx * (badge_w + gap), y, badge_w, badge_h))
             for idx, code in enumerate(codes)
@@ -442,56 +442,57 @@ class ControllerWidget(QWidget):
             p.drawText(rect, Qt.AlignCenter, label)
 
     def _xbox_shell_path(self) -> QPainterPath:
-        # Crisp Xbox One / Series X|S silhouette (flared grips, angled shoulders, arched bridge)
+        # Crisp Xbox One / Series X|S silhouette (tall flared grips, angled shoulders, arched belly)
         b = QPainterPath()
-        b.moveTo(234, 122)
-        b.lineTo(386, 122)
-        b.quadTo(418, 114, 456, 116)
-        b.cubicTo(504, 122, 536, 178, 560, 290)
-        b.cubicTo(570, 338, 566, 378, 540, 392)
-        b.quadTo(516, 398, 492, 374)
-        b.cubicTo(454, 330, 412, 304, 310, 304)
-        b.cubicTo(208, 304, 166, 330, 128, 374)
-        b.quadTo(104, 398, 80, 392)
-        b.cubicTo(54, 378, 50, 338, 60, 290)
-        b.cubicTo(84, 178, 116, 122, 164, 116)
-        b.quadTo(202, 114, 234, 122)
+        b.moveTo(226, 108)
+        b.lineTo(374, 108)
+        b.quadTo(404, 96, 434, 98)
+        b.cubicTo(486, 108, 514, 178, 534, 314)
+        b.cubicTo(542, 376, 536, 424, 506, 434)
+        b.quadTo(480, 440, 456, 412)
+        b.cubicTo(420, 366, 392, 336, 368, 332)
+        b.lineTo(232, 332)
+        b.cubicTo(208, 336, 180, 366, 144, 412)
+        b.quadTo(120, 440, 94, 434)
+        b.cubicTo(64, 424, 58, 376, 66, 314)
+        b.cubicTo(86, 178, 114, 108, 166, 98)
+        b.quadTo(196, 96, 226, 108)
         b.closeSubpath()
         return b
 
     def _playstation_shell_path(self) -> QPainterPath:
-        # DualSense sculpted flared wings & centered touchpad bridge
+        # DualSense sculpted tall grips & centered touchpad bridge
         b = QPainterPath()
-        b.moveTo(222, 116)
-        b.lineTo(398, 116)
-        b.quadTo(430, 112, 466, 122)
-        b.cubicTo(512, 136, 540, 198, 558, 302)
-        b.cubicTo(568, 354, 556, 392, 526, 396)
-        b.quadTo(498, 396, 476, 354)
-        b.cubicTo(454, 314, 424, 304, 310, 304)
-        b.cubicTo(196, 304, 166, 314, 144, 354)
-        b.quadTo(122, 396, 94, 396)
-        b.cubicTo(64, 392, 52, 354, 62, 302)
-        b.cubicTo(80, 198, 108, 136, 154, 122)
-        b.quadTo(190, 112, 222, 116)
+        b.moveTo(214, 104)
+        b.lineTo(386, 104)
+        b.quadTo(418, 98, 452, 112)
+        b.cubicTo(494, 130, 518, 206, 534, 326)
+        b.cubicTo(542, 386, 528, 430, 496, 434)
+        b.quadTo(468, 434, 446, 384)
+        b.cubicTo(424, 340, 398, 328, 300, 328)
+        b.cubicTo(202, 328, 176, 340, 154, 384)
+        b.quadTo(132, 434, 104, 434)
+        b.cubicTo(72, 430, 58, 386, 66, 326)
+        b.cubicTo(82, 206, 106, 130, 148, 112)
+        b.quadTo(182, 98, 214, 104)
         b.closeSubpath()
         return b
 
     def _nintendo_pro_shell_path(self) -> QPainterPath:
-        # Switch Pro compact shoulders & shorter downward grips
+        # Switch Pro sculpted shoulders & vertical grips
         b = QPainterPath()
-        b.moveTo(212, 120)
-        b.lineTo(408, 120)
-        b.quadTo(446, 116, 476, 128)
-        b.cubicTo(514, 146, 534, 212, 540, 304)
-        b.cubicTo(542, 352, 528, 384, 496, 386)
-        b.quadTo(468, 386, 444, 344)
-        b.cubicTo(420, 308, 390, 298, 310, 298)
-        b.cubicTo(230, 298, 200, 308, 176, 344)
-        b.quadTo(152, 386, 124, 386)
-        b.cubicTo(92, 384, 78, 352, 80, 304)
-        b.cubicTo(86, 212, 106, 146, 144, 128)
-        b.quadTo(174, 116, 212, 120)
+        b.moveTo(208, 108)
+        b.lineTo(392, 108)
+        b.quadTo(430, 102, 460, 118)
+        b.cubicTo(496, 140, 512, 220, 516, 328)
+        b.cubicTo(518, 382, 502, 420, 468, 422)
+        b.quadTo(440, 422, 418, 372)
+        b.cubicTo(396, 330, 368, 320, 300, 320)
+        b.cubicTo(232, 320, 204, 330, 182, 372)
+        b.quadTo(160, 422, 132, 422)
+        b.cubicTo(98, 420, 82, 382, 84, 328)
+        b.cubicTo(88, 220, 104, 140, 140, 118)
+        b.quadTo(170, 102, 208, 108)
         b.closeSubpath()
         return b
 
@@ -508,13 +509,13 @@ class ControllerWidget(QWidget):
             body = self._xbox_shell_path()
 
         p.save()
-        p.translate(0, 5)
+        p.translate(0, 6)
         p.setPen(Qt.NoPen)
         p.setBrush(QColor(0, 0, 0, 85))
         p.drawPath(body)
         p.restore()
 
-        shell_grad = QLinearGradient(310, 108, 310, 396)
+        shell_grad = QLinearGradient(300, 96, 300, 434)
         shell_grad.setColorAt(0.0, QColor("#171E27"))
         shell_grad.setColorAt(0.55, QColor("#11161C"))
         shell_grad.setColorAt(1.0, QColor("#0B0E12"))
@@ -544,21 +545,21 @@ class ControllerWidget(QWidget):
         elif spec.family == "nintendo_pro":
             # Translucent Switch Pro center grip seam framing
             p.setPen(QPen(QColor(255, 255, 255, 18), 1.2))
-            p.drawLine(QPointF(236, 122), QPointF(236, 300))
-            p.drawLine(QPointF(384, 122), QPointF(384, 300))
+            p.drawLine(QPointF(230, 110), QPointF(230, 322))
+            p.drawLine(QPointF(370, 110), QPointF(370, 322))
 
     def _draw_joycon_shell(self, p: QPainter) -> None:
         # Clean center Joy-Con Comfort Grip bridge (stays framed cleanly between the two Joy-Con rails)
         grip = QPainterPath()
-        grip.addRoundedRect(QRectF(204, 134, 212, 184), 16, 16)
+        grip.addRoundedRect(QRectF(204, 128, 192, 206), 16, 16)
 
         p.setPen(QPen(QColor("#242E3A"), 1.4))
         p.setBrush(QColor("#0D1116"))
         p.drawPath(grip)
 
         # Left & Right Joy-Con vertical rail shells
-        left_jc = QRectF(110, 114, 110, 254)
-        right_jc = QRectF(400, 114, 110, 254)
+        left_jc = QRectF(108, 102, 112, 290)
+        right_jc = QRectF(380, 102, 112, 290)
 
         for jc_rect, accent in (
             (left_jc, QColor("#0EA5E9")),
@@ -601,7 +602,7 @@ class ControllerWidget(QWidget):
         p.setPen(Qt.NoPen)
         for i in range(4):
             p.setBrush(QColor("#10B981") if i == 0 else QColor("#26303D"))
-            p.drawRect(QRectF(286 + i * 14, 218, 6, 6))
+            p.drawRect(QRectF(276 + i * 14, 224, 6, 6))
 
     def _draw_center_cluster(
         self, p: QPainter, spec: _ControllerLayoutSpec
@@ -659,7 +660,7 @@ class ControllerWidget(QWidget):
 
         if spec.family == "nintendo_pro":
             # Extra decorative Capture button to match Switch Pro
-            cap = QRectF(274, 184, 18, 18)
+            cap = QRectF(266, 189, 18, 18)
             p.setPen(QPen(QColor("#2D3748"), 1.3))
             p.setBrush(QColor("#080B0F"))
             p.drawRoundedRect(cap, 3, 3)
