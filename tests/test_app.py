@@ -426,6 +426,20 @@ class ClipsSubsystemTests(unittest.TestCase):
         rep = check_dependencies()
         self.assertTrue(rep.all_ok)
 
+    def test_sound_chimes_and_dnd_guard(self) -> None:
+        import wave
+        from antidrift.clips.sound_fx import ensure_sound_assets
+        from antidrift.clips.recorder import ensure_notifications_not_inhibited
+
+        cue, saved = ensure_sound_assets()
+        self.assertTrue(cue.exists() and saved.exists())
+        for wav_path in (cue, saved):
+            with wave.open(str(wav_path), "rb") as wf:
+                self.assertEqual(wf.getnchannels(), 1)
+                self.assertEqual(wf.getframerate(), 44100)
+                self.assertGreater(wf.getnframes(), 3000)
+        ensure_notifications_not_inhibited()
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

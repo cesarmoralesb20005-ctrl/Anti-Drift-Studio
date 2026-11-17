@@ -48,6 +48,7 @@ from .recorder import (
     install_gsr_flatpak_user,
     list_monitors_and_audio,
 )
+from .sound_fx import play_clip_saved_chime, play_voice_cue
 from .voice_trigger import (
     ModelDownloadThread,
     VoiceTriggerThread,
@@ -458,8 +459,11 @@ class ClipsTabWidget(QWidget):
         self._desk_audio_chk.toggled.connect(self._on_video_setting_changed)
         self._mic_audio_chk = QCheckBox("Incluir mi micrófono en el clip")
         self._mic_audio_chk.toggled.connect(self._on_video_setting_changed)
+        self._sound_chk = QCheckBox("Sonido amigable al guardar")
+        self._sound_chk.toggled.connect(self._on_sound_toggled)
         audio_row.addWidget(self._desk_audio_chk)
         audio_row.addWidget(self._mic_audio_chk)
+        audio_row.addWidget(self._sound_chk)
         va_lay.addLayout(audio_row, 2, 0, 1, 2)
 
         va_lay.addWidget(QLabel("Salida de audio:"), 3, 0)
@@ -534,6 +538,7 @@ class ClipsTabWidget(QWidget):
             self._desk_audio_chk.setChecked(c.record_desktop_audio)
             self._select_combo_data(self._desk_audio_src_combo, c.desktop_audio_source)
             self._mic_audio_chk.setChecked(c.record_mic_audio)
+            self._sound_chk.setChecked(c.sound_feedback)
             self._dir_edit.setText(c.output_dir)
 
             self._voice_chk.setChecked(c.voice_enabled)
@@ -677,9 +682,15 @@ class ClipsTabWidget(QWidget):
         name = Path(path).name
         self._set_feedback(f"✓ Clip guardado: {name}", "ok")
         if self._config.sound_feedback:
-            QApplication.beep()
+            play_clip_saved_chime()
         self.clip_notification.emit("Clip guardado", name)
         self._refresh_clips_gallery(select_path=path)
+
+    def _on_sound_toggled(self, checked: bool) -> None:
+        if self._syncing:
+            return
+        self._config.sound_feedback = checked
+        save_clips_config(self._config)
 
     def _on_clip_save_failed(self, err: str) -> None:
         self._set_feedback(err, "warn")
@@ -761,6 +772,8 @@ class ClipsTabWidget(QWidget):
 
     def _on_voice_phrase_detected(self, phrase: str) -> None:
         self._voice_status_lbl.setText(f"✓ Detectado: «{phrase}»")
+        if self._config.sound_feedback and self._recorder.is_running():
+            play_voice_cue()
         self._trigger_save_clip(f"Voz ('{phrase}')")
 
     def _on_voice_toggled(self, checked: bool) -> None:

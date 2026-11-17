@@ -306,6 +306,58 @@ def list_monitors_and_audio(
     return targets, audio_sources
 
 
+def ensure_notifications_not_inhibited() -> None:
+    """Prevent KDE Plasma from auto-enabling Do Not Disturb during screen capture."""
+    for read_cmd, write_cmd in (
+        ("kreadconfig6", "kwriteconfig6"),
+        ("kreadconfig5", "kwriteconfig5"),
+    ):
+        if shutil.which(write_cmd):
+            try:
+                cur = "true"
+                if shutil.which(read_cmd):
+                    res = subprocess.run(
+                        [
+                            read_cmd,
+                            "--file",
+                            "plasmanotifyrc",
+                            "--group",
+                            "DoNotDisturb",
+                            "--key",
+                            "WhenScreenSharing",
+                            "--default",
+                            "true",
+                        ],
+                        capture_output=True,
+                        text=True,
+                        timeout=1.0,
+                        check=False,
+                    )
+                    cur = res.stdout.strip().lower()
+                if cur != "false":
+                    subprocess.run(
+                        [
+                            write_cmd,
+                            "--file",
+                            "plasmanotifyrc",
+                            "--group",
+                            "DoNotDisturb",
+                            "--key",
+                            "WhenScreenSharing",
+                            "--type",
+                            "bool",
+                            "--notify",
+                            "false",
+                        ],
+                        capture_output=True,
+                        timeout=1.5,
+                        check=False,
+                    )
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+            break
+
+
 def _cleanup_stale_gsr(backend: GsrBackend | None) -> None:
     """Terminate any orphaned GPU Screen Recorder instances bound to our socket/sandbox."""
     if GSR_SOCKET_PATH.exists():
@@ -430,6 +482,7 @@ class ClipRecorderController(QObject):
             return
 
         self._backend = backend
+        ensure_notifications_not_inhibited()
         _cleanup_stale_gsr(backend)
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
         Path(self._config.output_dir).mkdir(parents=True, exist_ok=True)
