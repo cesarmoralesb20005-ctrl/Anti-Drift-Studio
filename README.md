@@ -58,3 +58,7 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 ```bash
 ./uninstall.sh
 ```
+
+## Licencia
+
+Distribuido bajo la licencia **GNU General Public License v3.0 (GPL-3.0-or-later)**. Consulta el archivo [LICENSE](LICENSE) para más detalles.
