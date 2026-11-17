@@ -136,11 +136,43 @@ class DetectedDevices:
     virtual_name: str | None = None
 
 
+def detect_controller_family(
+    name: str | None, vid_pid: str | None
+) -> str:
+    """Detect controller visual family: 'xbox' | 'playstation' | 'nintendo_pro' | 'joycon'."""
+    low = (name or "").lower()
+    vp = (vid_pid or "").lower()
+    vid = vp.split(":", 1)[0] if ":" in vp else ""
+
+    if vp in ("057e:2006", "057e:2007", "057e:200e") or "joy-con" in low or "joycon" in low:
+        return "joycon"
+    if vid == "057e" or any(
+        k in low for k in ("pro controller", "nintendo", "switch", "joy con")
+    ):
+        return "nintendo_pro"
+    if vid == "054c" or any(
+        k in low
+        for k in (
+            "dualsense",
+            "dualshock",
+            "playstation",
+            "sony interactive",
+            "wireless controller",
+            "ps5",
+            "ps4",
+            "ps3",
+        )
+    ):
+        return "playstation"
+    return "xbox"
+
+
 @dataclass
 class ControllerState:
     """Real-time hardware and anti-drift virtual controller state."""
 
     mode: str = "disconnected"  # "virtual" | "direct" | "disconnected" | "simulated"
+    controller_family: str = "xbox"  # "xbox" | "playstation" | "nintendo_pro" | "joycon"
     physical_path: str | None = None
     physical_name: str | None = None
     physical_vid_pid: str | None = None
@@ -682,6 +714,9 @@ class ControllerReaderThread(QThread):
                         dpad_bits = [0, 0, 0, 0]
 
                         state = ControllerState(
+                            controller_family=detect_controller_family(
+                                devices.physical_name, devices.physical_vid_pid
+                            ),
                             physical_path=devices.physical_path,
                             physical_name=devices.physical_name,
                             physical_vid_pid=devices.physical_vid_pid,
@@ -948,6 +983,7 @@ class ControllerReaderThread(QThread):
                     last_emit = now_emit
                     snapshot = ControllerState(
                         mode=state.mode,
+                        controller_family=state.controller_family,
                         physical_path=state.physical_path,
                         physical_name=state.physical_name,
                         physical_vid_pid=state.physical_vid_pid,

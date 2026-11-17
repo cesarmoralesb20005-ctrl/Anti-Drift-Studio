@@ -611,6 +611,25 @@ class MainWindow(QMainWindow):
         self._hz_badge.setToolTip("Frecuencia real de reporte del mando en Hz")
         top_row.addWidget(self._hz_badge)
 
+        self._family_override: str | None = None
+        self._family_btn = QPushButton("Auto: Xbox ▾")
+        self._family_btn.setObjectName("MiniPill")
+        self._family_btn.setToolTip(
+            "Tipo de mando detectado automáticamente (clic para previsualizar otro)"
+        )
+        fam_menu = QMenu(self._family_btn)
+        for fam_key, fam_lbl in (
+            (None, "Automático (según mando)"),
+            ("xbox", "Xbox One / Series"),
+            ("playstation", "PlayStation (DualSense / PS4)"),
+            ("nintendo_pro", "Nintendo Switch Pro"),
+            ("joycon", "Nintendo Joy-Con"),
+        ):
+            act = fam_menu.addAction(fam_lbl)
+            act.triggered.connect(lambda _=False, fk=fam_key: self._set_preview_family(fk))
+        self._family_btn.setMenu(fam_menu)
+        top_row.addWidget(self._family_btn)
+
         self._sim_btn = QPushButton("Probar sin mando")
         self._sim_btn.setObjectName("MiniPill")
         self._sim_btn.setCheckable(True)
@@ -1601,6 +1620,22 @@ class MainWindow(QMainWindow):
         self._cal_info.setText(reason)
         self.statusBar().showMessage(reason, 4000)
 
+    def _set_preview_family(self, family: str | None) -> None:
+        self._family_override = family
+        self._controller_widget.set_family_override(family)
+        self._refresh_family_badge()
+
+    def _refresh_family_badge(self) -> None:
+        labels = {
+            "xbox": "Xbox",
+            "playstation": "PS",
+            "nintendo_pro": "Switch Pro",
+            "joycon": "Joy-Con",
+        }
+        active = self._controller_widget.active_family()
+        prefix = "Auto: " if self._family_override is None else ""
+        self._family_btn.setText(f"{prefix}{labels.get(active, 'Xbox')} ▾")
+
     def _on_toggle_simulator(self, enabled: bool) -> None:
         self._controller_widget.set_simulator_enabled(enabled)
         if enabled:
@@ -1631,6 +1666,7 @@ class MainWindow(QMainWindow):
         if not self._sim_btn.isChecked():
             self._controller_widget.set_controller_state(state)
             self._update_simple_readout(state)
+        self._refresh_family_badge()
         if self._circ_dialog is not None:
             self._circ_dialog.feed_state(state)
         if state.supported_extra_keys:

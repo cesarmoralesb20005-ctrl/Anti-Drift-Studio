@@ -248,6 +248,7 @@ class ServiceAndUiTests(unittest.TestCase):
 
         state = ControllerState(
             mode="virtual",
+            controller_family="playstation",
             physical_path="/dev/input/event30",
             physical_name="DualSense Wireless Controller",
             physical_vid_pid="054c:0ce6",
@@ -275,6 +276,12 @@ class ServiceAndUiTests(unittest.TestCase):
 
         self.assertIn("250 Hz", win._hz_badge.text())
         self.assertIn("P1", win._active_buttons_label.text())
+        self.assertEqual(win._controller_widget.active_family(), "playstation")
+        for fam in ("xbox", "playstation", "nintendo_pro", "joycon"):
+            win._set_preview_family(fam)
+            self._app.processEvents()
+            win._controller_widget.grab()
+        win._set_preview_family(None)
 
         win._dz_mode_btns["radial"].click()
         self.assertEqual(win._config.dz_mode, "radial")
@@ -439,6 +446,38 @@ class ClipsSubsystemTests(unittest.TestCase):
                 self.assertEqual(wf.getframerate(), 44100)
                 self.assertGreater(wf.getnframes(), 3000)
         ensure_notifications_not_inhibited()
+
+    def test_controller_family_detection(self) -> None:
+        from antidrift.evdev_reader import detect_controller_family
+
+        self.assertEqual(
+            detect_controller_family("Microsoft X-Box One pad", "045e:02d1"),
+            "xbox",
+        )
+        self.assertEqual(
+            detect_controller_family("DualSense Wireless Controller", "054c:0ce6"),
+            "playstation",
+        )
+        self.assertEqual(
+            detect_controller_family("Sony Interactive Entertainment DualShock 4", "054c:09cc"),
+            "playstation",
+        )
+        self.assertEqual(
+            detect_controller_family("Nintendo Switch Pro Controller", "057e:2009"),
+            "nintendo_pro",
+        )
+        self.assertEqual(
+            detect_controller_family("Nintendo Switch Joy-Con (L)", "057e:2006"),
+            "joycon",
+        )
+        self.assertEqual(
+            detect_controller_family("Combined Joy-Cons", "057e:200e"),
+            "joycon",
+        )
+        self.assertEqual(
+            detect_controller_family("Generic USB Gamepad", "1234:5678"),
+            "xbox",
+        )
 
 
 if __name__ == "__main__":
