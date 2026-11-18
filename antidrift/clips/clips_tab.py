@@ -254,6 +254,7 @@ class ClipsTabWidget(QWidget):
         self._phrase_edit = QLineEdit()
         self._phrase_edit.setPlaceholderText("Ej. guarda clip, graba eso, clip")
         self._phrase_edit.returnPressed.connect(self._on_apply_voice_phrase)
+        self._phrase_edit.editingFinished.connect(self._on_apply_voice_phrase)
         v_row.addWidget(self._phrase_edit, 1)
 
         btn_apply_phrase = QPushButton("Aplicar")
@@ -779,6 +780,9 @@ class ClipsTabWidget(QWidget):
     def _on_voice_toggled(self, checked: bool) -> None:
         if self._syncing:
             return
+        pending_phrase = self._phrase_edit.text().strip()
+        if pending_phrase and pending_phrase != self._config.voice_phrase:
+            self._config.voice_phrase = pending_phrase
         self._config.voice_enabled = checked
         save_clips_config(self._config)
         if checked:

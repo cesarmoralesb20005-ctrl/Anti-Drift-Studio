@@ -480,6 +480,18 @@ class ClipsSubsystemTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(unk, [])
 
+        # Accents, uppercase, phonetics, filler connectors, and compound forms
+        self.assertEqual(match_wake_phrase("haz una GRABACIÓN rápida", ["grabacion rapida"]), "grabacion rapida")
+        self.assertEqual(match_wake_phrase("Guarda el Clip ahora", ["guarda clip"]), "guarda clip")
+        self.assertEqual(match_wake_phrase("saca un momento increíble", ["saca momento"]), "saca momento")
+        self.assertEqual(match_wake_phrase("por favor grava eso ya", ["graba eso"]), "graba eso")
+        self.assertEqual(match_wake_phrase("guardaclip", ["guarda clip"]), "guarda clip")
+        self.assertEqual(match_wake_phrase("Cámara", ["camara"]), "camara")
+        self.assertIsNone(match_wake_phrase("buenos días amigo", ["grabacion rapida", "saca momento"]))
+
+        ok_acc, unk_acc = validate_phrase_words("Grabacion Rapida Guardalo")
+        self.assertTrue(ok_acc, f"Unexpected unknown words: {unk_acc}")
+
         self.assertEqual(qt_seq_to_xdg_trigger("Alt+Shift+C"), "ALT+SHIFT+C")
         mods, main_k = parse_combo_evdev("Alt+Shift+C")
         self.assertEqual(len(mods), 2)
