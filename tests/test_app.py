@@ -747,6 +747,85 @@ class ClipsSubsystemTests(unittest.TestCase):
             th2.run()
         self.assertEqual(x11_kwargs, [{"emit_status": False}])
 
+    def test_clickable_clip_notification_and_selection(self) -> None:
+        from types import SimpleNamespace
+        from jeepney import HeaderFields, MessageType
+        from antidrift.clips.desktop_notifier import DesktopClipNotifier
+        from antidrift.main_window import MainWindow
+
+        notifier = DesktopClipNotifier()
+        addr_dummy = SimpleNamespace(
+            bus_name="org.freedesktop.Notifications",
+            object_path="/org/freedesktop/Notifications",
+            interface="org.freedesktop.Notifications",
+        )
+        msg = notifier._build_notify_call(
+            addr_dummy, "Clip guardado", "Replay_1.mp4", "/tmp/Replay_1.mp4", 5000
+        )
+        actions = msg.body[5]
+        self.assertIn("default", actions)
+        self.assertIn("open_clip", actions)
+        self.assertIn("Ver en Studio", actions)
+
+        notifier._record_notification(41, "/tmp/Replay_1.mp4")
+        notifier._record_notification(42, "/tmp/Replay_2.mp4")
+
+        opened: list[tuple[str, str]] = []
+        notifier.open_clip_requested.connect(lambda p, tok: opened.append((p, tok)))
+
+        def _sig(member: str, body: tuple):
+            return SimpleNamespace(
+                header=SimpleNamespace(
+                    message_type=MessageType.signal,
+                    fields={
+                        HeaderFields.interface: "org.freedesktop.Notifications",
+                        HeaderFields.member: member,
+                    },
+                ),
+                body=body,
+            )
+
+        notifier._handle_incoming(_sig("ActivationToken", (41, "tok-41")))
+        notifier._handle_incoming(_sig("ActionInvoked", (41, "open_clip")))
+        notifier._handle_incoming(_sig("ActionInvoked", (42, "default")))
+        self.assertEqual(
+            opened,
+            [("/tmp/Replay_1.mp4", "tok-41"), ("/tmp/Replay_2.mp4", "")],
+        )
+
+        # Verify MainWindow selects the exact notification clip and switches to Clips tab
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QApplication
+
+        _app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as tmp:
+            clip1 = Path(tmp) / "Replay_older.mp4"
+            clip2 = Path(tmp) / "Replay_newer.mp4"
+            clip1.write_bytes(b"0" * 1024)
+            clip2.write_bytes(b"0" * 2048)
+            os.utime(clip1, (1000, 1000))
+            os.utime(clip2, (2000, 2000))
+
+            old_xdg = os.environ.get("XDG_CONFIG_HOME")
+            os.environ["XDG_CONFIG_HOME"] = tmp
+            try:
+                win = MainWindow(start_reader=False, enable_tray=False)
+                win._clips_tab._config.output_dir = tmp
+                win._main_tabs.setCurrentIndex(0)
+                win._on_open_clip_from_notification(str(clip1), "xdg-tok-1")
+
+                self.assertEqual(win._main_tabs.currentIndex(), win._clips_tab_idx)
+                cur = win._clips_tab._clips_list.currentItem()
+                self.assertIsNotNone(cur)
+                self.assertEqual(cur.data(Qt.UserRole), str(clip1))
+                self.assertEqual(os.environ.get("XDG_ACTIVATION_TOKEN"), "xdg-tok-1")
+                win.close()
+            finally:
+                if old_xdg is None:
+                    os.environ.pop("XDG_CONFIG_HOME", None)
+                else:
+                    os.environ["XDG_CONFIG_HOME"] = old_xdg
+
     def test_distro_deps_detection(self) -> None:
         from antidrift.deps import DistroInfo, build_distro_install_command, check_dependencies, detect_distro
 

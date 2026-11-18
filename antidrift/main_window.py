@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 
 from PySide6.QtCore import QByteArray, QPointF, QRectF, QThread, QTimer, QUrl, Qt, Signal
 from PySide6.QtGui import QAction, QColor, QDesktopServices, QIcon, QPainter, QPen, QPixmap
@@ -37,6 +38,7 @@ from PySide6.QtWidgets import (
 )
 
 from .clips.clips_tab import ClipsTabWidget
+from .clips.desktop_notifier import DesktopClipNotifier
 from .config import (
     DEFAULT_CONFIG_PATH,
     DEFAULT_VIRTUAL_NAME,
@@ -468,6 +470,12 @@ class MainWindow(QMainWindow):
         self._force_quit = False
         self._start_reader = start_reader
         self._circ_dialog: CircularityTestDialog | None = None
+        self._last_notified_clip_path = ""
+        self._notifier: DesktopClipNotifier | None = None
+        if enable_tray or start_reader:
+            self._notifier = DesktopClipNotifier(self)
+            self._notifier.open_clip_requested.connect(self._on_open_clip_from_notification)
+            self._notifier.start()
 
         self._reader: ControllerReaderThread | None = None
         if start_reader:
@@ -523,6 +531,8 @@ class MainWindow(QMainWindow):
 
         self._status_timer.stop()
         self._profile_watch_timer.stop()
+        if self._notifier is not None:
+            self._notifier.stop()
         if hasattr(self, "_clips_tab"):
             self._clips_tab.shutdown()
         if hasattr(self, "_macros_tab"):
@@ -564,6 +574,9 @@ class MainWindow(QMainWindow):
             lambda reason: self._toggle_window_visibility()
             if reason == QSystemTrayIcon.Trigger
             else None
+        )
+        tray.messageClicked.connect(
+            lambda: self._on_open_clip_from_notification(self._last_notified_clip_path, "")
         )
         tray.show()
         self._tray = tray
@@ -789,9 +802,12 @@ class MainWindow(QMainWindow):
         tabs.addTab(self._macros_tab, "Botones Extra y Macros")
         self._clips_tab = ClipsTabWidget(start_background=self._start_reader)
         self._clips_tab.clip_notification.connect(self._on_clip_notification)
-        clips_idx = tabs.addTab(self._clips_tab, "Clips y Momentos")
+        tabs.addTab(self._clips_tab, "Clips y Momentos")
+        clips_idx = tabs.indexOf(self._clips_tab)
         tabs.addTab(self._build_settings_tab(), "Ajustes")
         tabs.currentChanged.connect(lambda idx: prof_bar.setVisible(idx != clips_idx))
+        self._main_tabs = tabs
+        self._clips_tab_idx = clips_idx
         w_lay.addWidget(tabs, 1)
         return wrapper
 
@@ -1987,10 +2003,32 @@ class MainWindow(QMainWindow):
         if hasattr(self, "_clips_tab"):
             self._clips_tab.process_controller_state(state)
 
-    def _on_clip_notification(self, title: str, msg: str) -> None:
+    def _on_clip_notification(self, title: str, msg: str, clip_path: str = "") -> None:
         self.statusBar().showMessage(f"{title}: {msg}", 4500)
+        if clip_path:
+            self._last_notified_clip_path = clip_path
+        if self._notifier is not None:
+            nid = self._notifier.notify(title, msg, clip_path, timeout_ms=5000)
+            if nid is not None:
+                return
         if self._tray is not None and self._tray.isVisible():
-            self._tray.showMessage(title, msg, QSystemTrayIcon.Information, 2500)
+            self._tray.showMessage(title, msg, QSystemTrayIcon.Information, 3500)
+
+    def _on_open_clip_from_notification(
+        self, clip_path: str = "", activation_token: str = ""
+    ) -> None:
+        if activation_token:
+            os.environ["XDG_ACTIVATION_TOKEN"] = activation_token
+        if self.isMinimized():
+            self.showNormal()
+        else:
+            self.show()
+        self.raise_()
+        self.activateWindow()
+        if hasattr(self, "_main_tabs") and hasattr(self, "_clips_tab_idx"):
+            self._main_tabs.setCurrentIndex(self._clips_tab_idx)
+        if clip_path and hasattr(self, "_clips_tab"):
+            self._clips_tab.select_clip_by_path(clip_path)
 
     def _on_macro_preview_state(self, state: ControllerState | None) -> None:
         self._controller_widget.set_macro_preview_state(state)

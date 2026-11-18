@@ -78,7 +78,7 @@ def _format_ms(ms: int) -> str:
 class ClipsTabWidget(QWidget):
     """Streamlined Instant Replay clips studio with voice, keyboard & pad triggers."""
 
-    clip_notification = Signal(str, str)  # title, message
+    clip_notification = Signal(str, str, str)  # title, message, clip_path
 
     def __init__(self, start_background: bool = True, parent=None) -> None:
         super().__init__(parent)
@@ -686,7 +686,7 @@ class ClipsTabWidget(QWidget):
         if not self._recorder.is_running():
             msg = "Primero pulsa 'Activar Replay' arriba para grabar en RAM."
             self._set_feedback(msg, "warn")
-            self.clip_notification.emit("Replay apagado", msg)
+            self.clip_notification.emit("Replay apagado", msg, "")
             return
 
         sec_txt = f"{override_sec or self._config.replay_seconds} s"
@@ -735,7 +735,7 @@ class ClipsTabWidget(QWidget):
         self._set_feedback(f"✓ Clip guardado: {name}", "ok")
         if self._config.sound_feedback:
             play_clip_saved_chime()
-        self.clip_notification.emit("Clip guardado", name)
+        self.clip_notification.emit("Clip guardado", name, path)
         self._refresh_clips_gallery(select_path=path)
 
     def _on_sound_toggled(self, checked: bool) -> None:
@@ -746,7 +746,7 @@ class ClipsTabWidget(QWidget):
 
     def _on_clip_save_failed(self, err: str) -> None:
         self._set_feedback(err, "warn")
-        self.clip_notification.emit("No se guardó el clip", err)
+        self.clip_notification.emit("No se guardó el clip", err, "")
 
     def _on_video_setting_changed(self) -> None:
         if self._syncing:
@@ -971,12 +971,35 @@ class ClipsTabWidget(QWidget):
             if select_path and str(p) == str(select_path):
                 target_row = idx
 
+        if select_path and target_row < 0:
+            sp = Path(select_path)
+            if sp.is_file():
+                mb = sp.stat().st_size / (1024.0 * 1024.0)
+                item = QListWidgetItem(f"{sp.name}  ({mb:.1f} MB)")
+                item.setData(Qt.UserRole, str(sp))
+                self._clips_list.addItem(item)
+                target_row = self._clips_list.count() - 1
+
         if target_row >= 0:
             self._auto_selecting_saved = True
             try:
                 self._clips_list.setCurrentRow(target_row)
+                item = self._clips_list.item(target_row)
+                if item is not None:
+                    self._clips_list.scrollToItem(item)
             finally:
                 self._auto_selecting_saved = False
+
+    def select_clip_by_path(self, clip_path: str) -> bool:
+        """Refresh gallery and select the specified clip path in the player."""
+        if not clip_path:
+            return False
+        self._refresh_clips_gallery(select_path=clip_path)
+        item = self._clips_list.currentItem()
+        if item is not None and str(item.data(Qt.UserRole)) == str(clip_path):
+            self._clips_list.setFocus()
+            return True
+        return False
 
     def _sync_player_audio_output(self) -> None:
         dev = QMediaDevices.defaultAudioOutput()
