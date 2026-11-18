@@ -63,7 +63,9 @@ from .service_ctrl import (
     ensure_sdl_ignore_device,
     get_service_logs,
     get_service_status,
+    is_app_autostart_enabled,
     run_service_action,
+    set_app_autostart,
 )
 from .updater import (
     UpdateCheckResult,
@@ -1137,6 +1139,16 @@ class MainWindow(QMainWindow):
         self._autostart_chk.toggled.connect(self._on_toggle_autostart)
         d_lay.addWidget(self._autostart_chk)
 
+        self._app_autostart_chk = QCheckBox(
+            "Ejecutar Anti-Drift Studio automáticamente al encender el PC"
+        )
+        self._app_autostart_chk.setToolTip(
+            "Abre el programa automáticamente al iniciar sesión (por defecto desactivado)."
+        )
+        self._app_autostart_chk.setChecked(is_app_autostart_enabled())
+        self._app_autostart_chk.toggled.connect(self._on_toggle_app_autostart)
+        d_lay.addWidget(self._app_autostart_chk)
+
         self._tray_chk = QCheckBox(
             "Minimizar a la bandeja del sistema al cerrar la ventana"
         )
@@ -1919,6 +1931,10 @@ class MainWindow(QMainWindow):
         self._autostart_chk.setChecked(st.enabled)
         self._autostart_chk.blockSignals(False)
 
+        self._app_autostart_chk.blockSignals(True)
+        self._app_autostart_chk.setChecked(is_app_autostart_enabled())
+        self._app_autostart_chk.blockSignals(False)
+
     def _run_svc(self, action: str) -> None:
         ok, msg = run_service_action(action)
         self._refresh_service_status()
@@ -1928,6 +1944,15 @@ class MainWindow(QMainWindow):
 
     def _on_toggle_autostart(self, checked: bool) -> None:
         self._run_svc("enable" if checked else "disable")
+
+    def _on_toggle_app_autostart(self, checked: bool) -> None:
+        ok, msg = set_app_autostart(checked)
+        self._app_autostart_chk.blockSignals(True)
+        self._app_autostart_chk.setChecked(is_app_autostart_enabled())
+        self._app_autostart_chk.blockSignals(False)
+        self.statusBar().showMessage(msg, 4000)
+        if not ok:
+            QMessageBox.warning(self, "Inicio automático", msg)
 
     def _refresh_logs(self) -> None:
         self._log_view.setPlainText(get_service_logs())

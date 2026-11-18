@@ -8,5 +8,6 @@ systemctl --user daemon-reload >/dev/null 2>&1 || true
 
 rm -f "$HOME/.local/bin/xbox-antidrift" "$HOME/.local/bin/xbox-antidrift.c" "$HOME/.local/bin/antidrift-save-clip"
 rm -f "$HOME/.local/share/applications/xbox-antidrift-gui.desktop"
+rm -f "$HOME/.config/autostart/xbox-antidrift-gui.desktop"
 
 echo "Desinstalado correctamente. Tus configuraciones en ~/.config/xbox-antidrift*.conf se conservaron."

@@ -207,6 +207,27 @@ class ServiceAndUiTests(unittest.TestCase):
         self.assertIsInstance(sdl_ok, bool)
         self.assertTrue(len(sdl_msg) > 0)
 
+    def test_app_autostart_desktop_toggle(self) -> None:
+        from antidrift.service_ctrl import is_app_autostart_enabled, set_app_autostart
+
+        with tempfile.TemporaryDirectory() as tmp:
+            desktop_path = Path(tmp) / "autostart" / "xbox-antidrift-gui.desktop"
+            # Disabled by default when no .desktop entry exists
+            self.assertFalse(is_app_autostart_enabled(desktop_path))
+
+            ok, _msg = set_app_autostart(True, autostart_path=desktop_path)
+            self.assertTrue(ok)
+            self.assertTrue(desktop_path.exists())
+            self.assertTrue(is_app_autostart_enabled(desktop_path))
+            txt = desktop_path.read_text(encoding="utf-8")
+            self.assertIn("[Desktop Entry]", txt)
+            self.assertIn("X-GNOME-Autostart-enabled=true", txt)
+
+            ok2, _msg2 = set_app_autostart(False, autostart_path=desktop_path)
+            self.assertTrue(ok2)
+            self.assertFalse(desktop_path.exists())
+            self.assertFalse(is_app_autostart_enabled(desktop_path))
+
     def test_circularity_dialog_metrics(self) -> None:
         dlg = CircularityTestDialog(0, 0, 0, 0)
         # Sweep 36 sectors around 85% radius -> suggests ~15% outer comp
@@ -226,8 +247,10 @@ class ServiceAndUiTests(unittest.TestCase):
 
         orig_save = clips_tab_mod.save_clips_config
         orig_load = clips_tab_mod.load_clips_config
+        orig_xdg = os.environ.get("XDG_CONFIG_HOME")
         with tempfile.TemporaryDirectory() as tmp:
             tmp_clips_cfg = Path(tmp) / "clips_test.json"
+            os.environ["XDG_CONFIG_HOME"] = str(Path(tmp) / "xdg")
             clips_tab_mod.save_clips_config = lambda cfg, path=tmp_clips_cfg: orig_save(cfg, tmp_clips_cfg)
             clips_tab_mod.load_clips_config = lambda path=tmp_clips_cfg: orig_load(tmp_clips_cfg)
             try:
@@ -235,6 +258,10 @@ class ServiceAndUiTests(unittest.TestCase):
             finally:
                 clips_tab_mod.save_clips_config = orig_save
                 clips_tab_mod.load_clips_config = orig_load
+                if orig_xdg is None:
+                    os.environ.pop("XDG_CONFIG_HOME", None)
+                else:
+                    os.environ["XDG_CONFIG_HOME"] = orig_xdg
 
     def _run_main_window_test_body(self) -> None:
         win = MainWindow(start_reader=False, enable_tray=False)
@@ -357,6 +384,17 @@ class ServiceAndUiTests(unittest.TestCase):
         self._app.processEvents()
         self.assertTrue(win._update_btn.isHidden())
         self.assertTrue(win._btn_apply_update.isHidden())
+
+        # Verify PC startup desktop autostart toggle defaults to False and writes XDG entry
+        from antidrift.service_ctrl import is_app_autostart_enabled
+
+        self.assertFalse(win._app_autostart_chk.isChecked())
+        win._app_autostart_chk.setChecked(True)
+        self._app.processEvents()
+        self.assertTrue(is_app_autostart_enabled())
+        win._app_autostart_chk.setChecked(False)
+        self._app.processEvents()
+        self.assertFalse(is_app_autostart_enabled())
 
         win.close()
 
