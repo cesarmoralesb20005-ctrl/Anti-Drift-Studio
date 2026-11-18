@@ -37,14 +37,18 @@ from antidrift.clips.voice_trigger import (
     vosk_is_available,
 )
 from antidrift.config import (
+    DEFAULT_VIRTUAL_NAME,
     AntiDriftConfig,
     apply_axial_deadzone,
     apply_hair_trigger,
     compute_corrected_stick,
     deadzone_raw_bounds,
     load_config,
+    load_device_config,
     normalize_axis,
+    sanitize_virtual_name,
     save_config,
+    save_device_config,
     scale_hw_to_i16,
     scale_trig_to_1023,
 )
@@ -102,11 +106,67 @@ class ConfigAndUniversalMathTests(unittest.TestCase):
                 debounce_ms=15,
                 rumble_gain=65,
                 swap_nintendo=True,
+                multi_controller=False,
                 device_path="/dev/input/event12",
+                virtual_name="Mando de Cesar",
             )
             save_config(cfg, path)
             loaded = load_config(path)
             self.assertEqual(loaded, cfg)
+
+    def test_virtual_name_and_multipad_device_configs(self) -> None:
+        self.assertEqual(sanitize_virtual_name("   "), DEFAULT_VIRTUAL_NAME)
+        self.assertEqual(sanitize_virtual_name("Mando   de\nCesar"), "Mando de Cesar")
+        self.assertLessEqual(len(sanitize_virtual_name("á" * 60).encode("utf-8")), 79)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            dev_conf = Path(tmp) / "devices.conf"
+            base = AntiDriftConfig(virtual_name="Global Pad", dz_l=0.14, multi_controller=True)
+
+            pad1_cfg = AntiDriftConfig(
+                center_lx=-1200,
+                dz_l=0.16,
+                virtual_name="Mando de Cesar",
+                swap_nintendo=False,
+            )
+            pad2_cfg = AntiDriftConfig(
+                center_rx=2400,
+                dz_r=0.22,
+                virtual_name="Mando Switch Ana",
+                swap_nintendo=True,
+            )
+            save_device_config("045e:02d1|usb-1", pad1_cfg, label="Xbox Pad", path=dev_conf)
+            save_device_config("057e:2009|uniq:aa:bb", pad2_cfg, label="Pro Pad", path=dev_conf)
+
+            r1 = load_device_config("045e:02d1|usb-1", base, path=dev_conf)
+            r2 = load_device_config("057e:2009|uniq:aa:bb", base, path=dev_conf)
+            r_unknown = load_device_config("1234:5678|usb-9", base, path=dev_conf)
+
+            self.assertEqual(r1.virtual_name, "Mando de Cesar")
+            self.assertEqual(r1.center_lx, -1200)
+            self.assertEqual(r2.virtual_name, "Mando Switch Ana")
+            self.assertEqual(r2.center_rx, 2400)
+            self.assertTrue(r2.swap_nintendo)
+            self.assertEqual(r_unknown.virtual_name, "Global Pad")
+
+    def test_daemon_c_compiles_cleanly(self) -> None:
+        import shutil
+        import subprocess
+
+        gcc = shutil.which("gcc")
+        if gcc is None:
+            self.skipTest("gcc not installed")
+        daemon_c = Path(__file__).resolve().parent.parent / "daemon" / "xbox-antidrift.c"
+        with tempfile.TemporaryDirectory() as tmp:
+            out_bin = Path(tmp) / "xbox-antidrift"
+            res = subprocess.run(
+                [gcc, "-O2", "-Wall", "-Wextra", "-Werror", str(daemon_c), "-o", str(out_bin), "-lm"],
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertTrue(out_bin.exists())
 
     def test_universal_axis_scaling(self) -> None:
         self.assertEqual(scale_hw_to_i16(0, 0, 255), -32768)
@@ -395,6 +455,30 @@ class ServiceAndUiTests(unittest.TestCase):
         win._app_autostart_chk.setChecked(False)
         self._app.processEvents()
         self.assertFalse(is_app_autostart_enabled())
+
+        # Verify custom virtual controller name + multi-controller settings & pill updates
+        win._virtual_name_edit.setText("Mando de Cesar")
+        self._app.processEvents()
+        self.assertEqual(win._config.virtual_name, "Mando de Cesar")
+        self.assertIn("Mando de Cesar", win._vname_pill_btn.text())
+        self.assertTrue(win._multi_pad_chk.isChecked())
+        win._multi_pad_chk.setChecked(False)
+        self._app.processEvents()
+        self.assertFalse(win._config.multi_controller)
+
+        multi_state = ControllerState(
+            mode="virtual",
+            controller_family="xbox",
+            physical_path="/dev/input/event20",
+            physical_name="Xbox Pad P1",
+            physical_vid_pid="045e:02d1",
+            virtual_path="/dev/input/event21",
+            virtual_name="Mando de Cesar",
+            connected_count=2,
+        )
+        win._on_controller_state(multi_state)
+        self._app.processEvents()
+        self.assertIn("2 mandos", win._hw_pill.text())
 
         win.close()
 

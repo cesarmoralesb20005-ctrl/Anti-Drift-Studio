@@ -21,6 +21,9 @@
 #define MAX_STEPS 64
 #define NUM_STD_KEYS 11
 #define MAX_FF_EFFECTS 32
+#define MAX_PADS 8
+#define MAX_PATH_LEN 256
+#define DEFAULT_VIRTUAL_NAME "Microsoft X-Box 360 pad"
 
 static volatile sig_atomic_t running = 1;
 static volatile sig_atomic_t reload_cfg = 0;
@@ -67,6 +70,29 @@ static int parse_btn_name(const char *name) {
     return -1;
 }
 
+static void trim_ws(char *s) {
+    if (!s) return;
+    size_t len = strlen(s);
+    while (len > 0 && (s[len - 1] == ' ' || s[len - 1] == '\t' || s[len - 1] == '\r' || s[len - 1] == '\n')) {
+        s[--len] = '\0';
+    }
+    char *p = s;
+    while (*p == ' ' || *p == '\t') p++;
+    if (p != s) memmove(s, p, strlen(p) + 1);
+}
+
+static void read_sys_line(const char *path, char *out, size_t out_sz) {
+    if (!out || out_sz == 0) return;
+    out[0] = '\0';
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+    if (!fgets(out, (int)out_sz, f)) {
+        out[0] = '\0';
+    }
+    fclose(f);
+    trim_ws(out);
+}
+
 typedef struct {
     int center_lx;
     int center_ly;
@@ -83,28 +109,75 @@ typedef struct {
     int debounce_ms;
     int rumble_gain;    /* 0..100 */
     int swap_nintendo;  /* 0 or 1 */
-    char device_path[256];
+    int multi_controller; /* 1=protect all connected controllers, 0=only device_path */
+    char device_path[MAX_PATH_LEN];
+    char virtual_name[UINPUT_MAX_NAME_SIZE];
 } Config;
 
-static Config load_config(void) {
-    Config cfg = {
-        .center_lx = 0,
-        .center_ly = 0,
-        .dz_l = 0.12,
-        .center_rx = 0,
-        .center_ry = 0,
-        .dz_r = 0.12,
-        .dz_mode = 0,
-        .outer_comp_l = 0.0,
-        .outer_comp_r = 0.0,
-        .low_latency = 0,
-        .response_curve = 1.0,
-        .hair_trigger = 0,
-        .debounce_ms = 0,
-        .rumble_gain = 100,
-        .swap_nintendo = 0,
-    };
-    snprintf(cfg.device_path, sizeof(cfg.device_path), "auto");
+static void init_default_config(Config *cfg) {
+    memset(cfg, 0, sizeof(*cfg));
+    cfg->dz_l = 0.12;
+    cfg->dz_r = 0.12;
+    cfg->response_curve = 1.0;
+    cfg->rumble_gain = 100;
+    cfg->multi_controller = 1;
+    snprintf(cfg->device_path, sizeof(cfg->device_path), "auto");
+    snprintf(cfg->virtual_name, sizeof(cfg->virtual_name), "%s", DEFAULT_VIRTUAL_NAME);
+}
+
+static void apply_kv_to_config(Config *cfg, const char *key, const char *raw_val) {
+    char strval[256];
+    snprintf(strval, sizeof(strval), "%s", raw_val);
+    trim_ws(strval);
+    double val = strtod(strval, NULL);
+
+    if (strcmp(key, "center_lx") == 0) cfg->center_lx = (int)val;
+    else if (strcmp(key, "center_ly") == 0) cfg->center_ly = (int)val;
+    else if (strcmp(key, "dz_l") == 0) cfg->dz_l = fmax(0.0, fmin(0.60, val));
+    else if (strcmp(key, "center_rx") == 0) cfg->center_rx = (int)val;
+    else if (strcmp(key, "center_ry") == 0) cfg->center_ry = (int)val;
+    else if (strcmp(key, "dz_r") == 0) cfg->dz_r = fmax(0.0, fmin(0.60, val));
+    else if (strcmp(key, "dz_mode") == 0) {
+        if (strcmp(strval, "radial") == 0) cfg->dz_mode = 1;
+        else if (strcmp(strval, "hybrid") == 0) cfg->dz_mode = 2;
+        else if (strcmp(strval, "axial") == 0) cfg->dz_mode = 0;
+        else cfg->dz_mode = (int)val;
+        if (cfg->dz_mode < 0 || cfg->dz_mode > 2) cfg->dz_mode = 0;
+    }
+    else if (strcmp(key, "outer_comp_l") == 0) cfg->outer_comp_l = fmax(0.0, fmin(0.30, val));
+    else if (strcmp(key, "outer_comp_r") == 0) cfg->outer_comp_r = fmax(0.0, fmin(0.30, val));
+    else if (strcmp(key, "low_latency") == 0) cfg->low_latency = ((int)val != 0);
+    else if (strcmp(key, "hair_trigger") == 0) cfg->hair_trigger = ((int)val != 0);
+    else if (strcmp(key, "response_curve") == 0) cfg->response_curve = fmax(0.45, fmin(1.30, val));
+    else if (strcmp(key, "debounce_ms") == 0) {
+        cfg->debounce_ms = (int)val;
+        if (cfg->debounce_ms < 0) cfg->debounce_ms = 0;
+        if (cfg->debounce_ms > 80) cfg->debounce_ms = 80;
+    }
+    else if (strcmp(key, "rumble_gain") == 0) {
+        cfg->rumble_gain = (int)val;
+        if (cfg->rumble_gain < 0) cfg->rumble_gain = 0;
+        if (cfg->rumble_gain > 100) cfg->rumble_gain = 100;
+    }
+    else if (strcmp(key, "swap_nintendo") == 0) cfg->swap_nintendo = ((int)val != 0);
+    else if (strcmp(key, "multi_controller") == 0) cfg->multi_controller = ((int)val != 0);
+    else if (strcmp(key, "device_path") == 0) {
+        if (strval[0]) snprintf(cfg->device_path, sizeof(cfg->device_path), "%s", strval);
+        else snprintf(cfg->device_path, sizeof(cfg->device_path), "auto");
+    }
+    else if (strcmp(key, "virtual_name") == 0) {
+        if (strval[0]) {
+            snprintf(cfg->virtual_name, sizeof(cfg->virtual_name), "%.*s",
+                     (int)sizeof(cfg->virtual_name) - 1, strval);
+        } else {
+            snprintf(cfg->virtual_name, sizeof(cfg->virtual_name), "%s", DEFAULT_VIRTUAL_NAME);
+        }
+    }
+}
+
+static Config load_global_config(void) {
+    Config cfg;
+    init_default_config(&cfg);
 
     const char *home = getenv("HOME");
     if (!home) return cfg;
@@ -115,46 +188,90 @@ static Config load_config(void) {
 
     char line[384];
     while (fgets(line, sizeof(line), f)) {
-        if (line[0] == '#' || line[0] == '\n') continue;
-        char key[64];
-        char strval[256];
-        if (sscanf(line, " %63[^= ] = %255[^\r\n]", key, strval) == 2) {
-            double val = strtod(strval, NULL);
-            if (strcmp(key, "center_lx") == 0) cfg.center_lx = (int)val;
-            else if (strcmp(key, "center_ly") == 0) cfg.center_ly = (int)val;
-            else if (strcmp(key, "dz_l") == 0) cfg.dz_l = val;
-            else if (strcmp(key, "center_rx") == 0) cfg.center_rx = (int)val;
-            else if (strcmp(key, "center_ry") == 0) cfg.center_ry = (int)val;
-            else if (strcmp(key, "dz_r") == 0) cfg.dz_r = val;
-            else if (strcmp(key, "dz_mode") == 0) {
-                if (strcmp(strval, "radial") == 0) cfg.dz_mode = 1;
-                else if (strcmp(strval, "hybrid") == 0) cfg.dz_mode = 2;
-                else cfg.dz_mode = (int)val;
-                if (cfg.dz_mode < 0 || cfg.dz_mode > 2) cfg.dz_mode = 0;
-            }
-            else if (strcmp(key, "outer_comp_l") == 0) cfg.outer_comp_l = fmax(0.0, fmin(0.30, val));
-            else if (strcmp(key, "outer_comp_r") == 0) cfg.outer_comp_r = fmax(0.0, fmin(0.30, val));
-            else if (strcmp(key, "low_latency") == 0) cfg.low_latency = ((int)val != 0);
-            else if (strcmp(key, "hair_trigger") == 0) cfg.hair_trigger = ((int)val != 0);
-            else if (strcmp(key, "response_curve") == 0) cfg.response_curve = fmax(0.45, fmin(1.30, val));
-            else if (strcmp(key, "debounce_ms") == 0) {
-                cfg.debounce_ms = (int)val;
-                if (cfg.debounce_ms < 0) cfg.debounce_ms = 0;
-                if (cfg.debounce_ms > 80) cfg.debounce_ms = 80;
-            }
-            else if (strcmp(key, "rumble_gain") == 0) {
-                cfg.rumble_gain = (int)val;
-                if (cfg.rumble_gain < 0) cfg.rumble_gain = 0;
-                if (cfg.rumble_gain > 100) cfg.rumble_gain = 100;
-            }
-            else if (strcmp(key, "swap_nintendo") == 0) cfg.swap_nintendo = ((int)val != 0);
-            else if (strcmp(key, "device_path") == 0) {
-                snprintf(cfg.device_path, sizeof(cfg.device_path), "%s", strval);
-            }
-        }
+        trim_ws(line);
+        if (line[0] == '#' || line[0] == '\0') continue;
+        char *eq = strchr(line, '=');
+        if (!eq) continue;
+        *eq = '\0';
+        char *key = line;
+        char *val = eq + 1;
+        trim_ws(key);
+        trim_ws(val);
+        if (key[0]) apply_kv_to_config(&cfg, key, val);
     }
     fclose(f);
     return cfg;
+}
+
+static Config load_device_config(const Config *global_cfg, const char *stable_id) {
+    Config cfg = *global_cfg;
+    if (!stable_id || !stable_id[0]) return cfg;
+
+    const char *home = getenv("HOME");
+    if (!home) return cfg;
+    char path[512];
+    snprintf(path, sizeof(path), "%s/.config/xbox-antidrift-devices.conf", home);
+    FILE *f = fopen(path, "r");
+    if (!f) return cfg;
+
+    char line[384];
+    int in_section = 0;
+    while (fgets(line, sizeof(line), f)) {
+        trim_ws(line);
+        if (line[0] == '#' || line[0] == '\0') continue;
+        if (line[0] == '[') {
+            in_section = 0;
+            if (strncmp(line, "[device ", 8) == 0) {
+                char *end = strrchr(line, ']');
+                if (end) {
+                    *end = '\0';
+                    char *sec_id = line + 8;
+                    trim_ws(sec_id);
+                    if (strcmp(sec_id, stable_id) == 0) {
+                        in_section = 1;
+                    }
+                }
+            }
+            continue;
+        }
+        if (!in_section) continue;
+        char *eq = strchr(line, '=');
+        if (!eq) continue;
+        *eq = '\0';
+        char *key = line;
+        char *val = eq + 1;
+        trim_ws(key);
+        trim_ws(val);
+        if (key[0]) apply_kv_to_config(&cfg, key, val);
+    }
+    fclose(f);
+    return cfg;
+}
+
+static void compute_device_stable_id(const char *ev_name, char *out, size_t out_sz) {
+    char p_vid[320], p_pid[320], p_uniq[320], p_phys[320];
+    char vid[32] = "0000", pid[32] = "0000", uniq[128] = "", phys[128] = "";
+
+    snprintf(p_vid, sizeof(p_vid), "/sys/class/input/%s/device/id/vendor", ev_name);
+    snprintf(p_pid, sizeof(p_pid), "/sys/class/input/%s/device/id/product", ev_name);
+    snprintf(p_uniq, sizeof(p_uniq), "/sys/class/input/%s/device/uniq", ev_name);
+    snprintf(p_phys, sizeof(p_phys), "/sys/class/input/%s/device/phys", ev_name);
+
+    read_sys_line(p_vid, vid, sizeof(vid));
+    read_sys_line(p_pid, pid, sizeof(pid));
+    if (!vid[0]) snprintf(vid, sizeof(vid), "0000");
+    if (!pid[0]) snprintf(pid, sizeof(pid), "0000");
+
+    read_sys_line(p_uniq, uniq, sizeof(uniq));
+    read_sys_line(p_phys, phys, sizeof(phys));
+
+    if (uniq[0]) {
+        snprintf(out, out_sz, "%s:%s|uniq:%s", vid, pid, uniq);
+    } else if (phys[0]) {
+        snprintf(out, out_sz, "%s:%s|%s", vid, pid, phys);
+    } else {
+        snprintf(out, out_sz, "%s:%s|node:%s", vid, pid, ev_name);
+    }
 }
 
 typedef enum {
@@ -304,9 +421,7 @@ static MacroTable load_macros(void) {
         *eq = '\0';
         char *k = line;
         char *v = eq + 1;
-        while (*k == ' ' || *k == '\t') k++;
-        char *kend = k + strlen(k);
-        while (kend > k && (kend[-1] == ' ' || kend[-1] == '\t')) *(--kend) = '\0';
+        trim_ws(k);
         while (*v == ' ' || *v == '\t') v++;
 
         if (strcmp(k, "enabled") == 0) cur->enabled = atoi(v) ? 1 : 0;
@@ -388,7 +503,6 @@ static void apply_stick_transform(
     double outer_comp, double curve, int *ox, int *oy) {
     if (dz_mode == 1 || dz_mode == 2) {
         if (dz_mode == 2) {
-            /* Hybrid: light axial snap around axes before radial scaling */
             double ax_dz = dz * 0.40;
             if (fabs(nx) <= ax_dz) nx = 0.0;
             if (fabs(ny) <= ax_dz) ny = 0.0;
@@ -433,30 +547,47 @@ static int bit_is_set(const unsigned char *bits, int code) {
 }
 
 static int is_virtual_event(const char *ev_name) {
+    char dev_link[300], resolved[512] = {0};
+    snprintf(dev_link, sizeof(dev_link), "/sys/class/input/%s/device", ev_name);
+    if (realpath(dev_link, resolved) && strstr(resolved, "/virtual/") != NULL) {
+        return 1;
+    }
+
+    char phys_path[300], phys_val[128] = {0};
+    snprintf(phys_path, sizeof(phys_path), "/sys/class/input/%s/device/phys", ev_name);
+    read_sys_line(phys_path, phys_val, sizeof(phys_val));
+    if (strncmp(phys_val, "antidrift:", 10) == 0) {
+        return 1;
+    }
+
     char uevent_path[300], name_path[300], dev_name[128] = {0};
     snprintf(name_path, sizeof(name_path), "/sys/class/input/%s/device/name", ev_name);
-    FILE *nf = fopen(name_path, "r");
-    if (nf) {
-        if (!fgets(dev_name, sizeof(dev_name), nf)) dev_name[0] = '\0';
-        fclose(nf);
-    }
+    read_sys_line(name_path, dev_name, sizeof(dev_name));
 
     snprintf(uevent_path, sizeof(uevent_path), "/sys/class/input/%s/device/uevent", ev_name);
     FILE *uf = fopen(uevent_path, "r");
-    int has_phys = 0;
+    int has_phys = (phys_val[0] != '\0');
     int is_virtual_devpath = 0;
+    int is_antidrift_phys = 0;
     if (uf) {
         char uline[256];
         while (fgets(uline, sizeof(uline), uf)) {
-            if (strncmp(uline, "PHYS=", 5) == 0 && strlen(uline) > 6) has_phys = 1;
+            if (strncmp(uline, "PHYS=", 5) == 0 && strlen(uline) > 6) {
+                char *pv = uline + 5;
+                if (*pv == '"' || *pv == '\'') pv++;
+                if (*pv && *pv != '"' && *pv != '\'') has_phys = 1;
+                if (strncmp(pv, "antidrift:", 10) == 0) {
+                    is_antidrift_phys = 1;
+                }
+            }
             if (strncmp(uline, "DEVPATH=", 8) == 0 && strstr(uline, "/virtual/")) {
                 is_virtual_devpath = 1;
             }
         }
         fclose(uf);
     }
-    if (is_virtual_devpath) return 1;
-    if (strstr(dev_name, "Microsoft X-Box 360 pad") && !has_phys) return 1;
+    if (is_antidrift_phys || is_virtual_devpath) return 1;
+    if (strstr(dev_name, DEFAULT_VIRTUAL_NAME) && !has_phys) return 1;
     return 0;
 }
 
@@ -465,11 +596,7 @@ static int score_gamepad_node(const char *ev_name, const char *dev_node) {
 
     char name_path[300], dev_name[160] = {0};
     snprintf(name_path, sizeof(name_path), "/sys/class/input/%s/device/name", ev_name);
-    FILE *nf = fopen(name_path, "r");
-    if (nf) {
-        if (!fgets(dev_name, sizeof(dev_name), nf)) dev_name[0] = '\0';
-        fclose(nf);
-    }
+    read_sys_line(name_path, dev_name, sizeof(dev_name));
 
     if (strstr(dev_name, "Motion Sensor") || strstr(dev_name, "Touchpad") ||
         strstr(dev_name, "Accelerometer") || strstr(dev_name, "Mouse")) {
@@ -507,46 +634,44 @@ static int score_gamepad_node(const char *ev_name, const char *dev_node) {
     return score;
 }
 
-static int find_controller_path(const Config *cfg, char *out, size_t out_sz) {
-    if (cfg->device_path[0] && strcmp(cfg->device_path, "auto") != 0) {
-        if (access(cfg->device_path, R_OK) == 0) {
-            const char *base = strrchr(cfg->device_path, '/');
-            const char *ev_name = base ? (base + 1) : cfg->device_path;
-            if (strncmp(ev_name, "event", 5) == 0) {
-                if (score_gamepad_node(ev_name, cfg->device_path) >= 0) {
-                    snprintf(out, out_sz, "%s", cfg->device_path);
-                    return 0;
-                }
-            } else {
-                snprintf(out, out_sz, "%s", cfg->device_path);
-                return 0;
-            }
-        }
-    }
+typedef struct {
+    char ev_name[64];
+    char dev_node[MAX_PATH_LEN];
+    int score;
+} GamepadCandidate;
 
+static int cmp_candidates_desc(const void *a, const void *b) {
+    const GamepadCandidate *ca = (const GamepadCandidate *)a;
+    const GamepadCandidate *cb = (const GamepadCandidate *)b;
+    if (cb->score != ca->score) return cb->score - ca->score;
+    return strcmp(ca->dev_node, cb->dev_node);
+}
+
+static int list_gamepad_candidates(GamepadCandidate *out, int max_items) {
     DIR *dir = opendir("/sys/class/input");
-    if (!dir) return -1;
+    if (!dir) return 0;
 
-    int best_score = -1;
-    char best_path[300] = {0};
+    int count = 0;
     struct dirent *ent;
-    while ((ent = readdir(dir)) != NULL) {
+    while ((ent = readdir(dir)) != NULL && count < max_items) {
         if (strncmp(ent->d_name, "event", 5) != 0) continue;
-        char dev_node[300];
-        snprintf(dev_node, sizeof(dev_node), "/dev/input/%s", ent->d_name);
+        if (strlen(ent->d_name) >= 48) continue;
+        char dev_node[MAX_PATH_LEN];
+        snprintf(dev_node, sizeof(dev_node), "/dev/input/%.48s", ent->d_name);
         int sc = score_gamepad_node(ent->d_name, dev_node);
-        if (sc > best_score) {
-            best_score = sc;
-            snprintf(best_path, sizeof(best_path), "%s", dev_node);
+        if (sc >= 0) {
+            snprintf(out[count].ev_name, sizeof(out[count].ev_name), "%.48s", ent->d_name);
+            snprintf(out[count].dev_node, sizeof(out[count].dev_node), "%s", dev_node);
+            out[count].score = sc;
+            count++;
         }
     }
     closedir(dir);
 
-    if (best_score >= 0) {
-        snprintf(out, out_sz, "%s", best_path);
-        return 0;
+    if (count > 1) {
+        qsort(out, (size_t)count, sizeof(GamepadCandidate), cmp_candidates_desc);
     }
-    return -1;
+    return count;
 }
 
 typedef struct {
@@ -656,7 +781,7 @@ static int apply_nintendo_swap(int code, int swap_nintendo) {
     return code;
 }
 
-static int setup_uinput(int low_latency, int enable_ff) {
+static int setup_uinput(int low_latency, int enable_ff, const char *virtual_name, const char *ev_name) {
     int ufd = open("/dev/uinput", O_RDWR | O_NONBLOCK);
     if (ufd < 0) {
         perror("open /dev/uinput");
@@ -698,6 +823,11 @@ static int setup_uinput(int low_latency, int enable_ff) {
         ioctl(ufd, UI_SET_FFBIT, FF_RUMBLE);
     }
 
+    char vphys[96];
+    snprintf(vphys, sizeof(vphys), "antidrift:%s", (ev_name && ev_name[0]) ? ev_name : "pad");
+    ioctl(ufd, UI_SET_PHYS, vphys);
+
+    const char *vname = (virtual_name && virtual_name[0]) ? virtual_name : DEFAULT_VIRTUAL_NAME;
     struct uinput_setup usetup;
     memset(&usetup, 0, sizeof(usetup));
     usetup.id.bustype = BUS_USB;
@@ -705,7 +835,7 @@ static int setup_uinput(int low_latency, int enable_ff) {
     usetup.id.product = 0x028e;
     usetup.id.version = 0x0110;
     usetup.ff_effects_max = enable_ff ? 16 : 0;
-    snprintf(usetup.name, UINPUT_MAX_NAME_SIZE, "Microsoft X-Box 360 pad");
+    snprintf(usetup.name, UINPUT_MAX_NAME_SIZE, "%s", vname);
 
     if (ioctl(ufd, UI_DEV_SETUP, &usetup) < 0 || ioctl(ufd, UI_DEV_CREATE) < 0) {
         perror("UI_DEV_CREATE");
@@ -713,29 +843,6 @@ static int setup_uinput(int low_latency, int enable_ff) {
         return -1;
     }
     return ufd;
-}
-
-static struct input_event g_ev_batch[64];
-static int g_ev_batch_len = 0;
-
-static void flush_ev(int ufd) {
-    if (g_ev_batch_len > 0) {
-        ssize_t unused = write(
-            ufd, g_ev_batch, (size_t)g_ev_batch_len * sizeof(struct input_event));
-        (void)unused;
-        g_ev_batch_len = 0;
-    }
-}
-
-static void emit_ev(int ufd, uint16_t type, uint16_t code, int32_t value) {
-    struct input_event *ev = &g_ev_batch[g_ev_batch_len++];
-    memset(ev, 0, sizeof(*ev));
-    ev->type = type;
-    ev->code = code;
-    ev->value = value;
-    if ((type == EV_SYN && code == SYN_REPORT) || g_ev_batch_len >= 64) {
-        flush_ev(ufd);
-    }
 }
 
 typedef struct {
@@ -750,61 +857,101 @@ typedef struct {
     int ff_map[MAX_FF_EFFECTS];
 } PadRuntime;
 
-static void handle_uinput_ff(int ufd, int src_fd, const Config *cfg, PadRuntime *rt) {
+typedef struct {
+    int active;
+    char dev_path[MAX_PATH_LEN];
+    char ev_name[64];
+    char stable_id[192];
+    int src_fd;
+    int src_is_rw;
+    int ufd;
+    int dirty_l;
+    int dirty_r;
+    Config cfg;
+    HardwareMap hm;
+    MacroTable macros;
+    PadRuntime rt;
+    struct input_event ev_batch[64];
+    int ev_batch_len;
+} PadInstance;
+
+static void flush_ev(PadInstance *pad) {
+    if (pad->ev_batch_len > 0 && pad->ufd >= 0) {
+        ssize_t unused = write(
+            pad->ufd, pad->ev_batch, (size_t)pad->ev_batch_len * sizeof(struct input_event));
+        (void)unused;
+        pad->ev_batch_len = 0;
+    }
+}
+
+static void emit_ev(PadInstance *pad, uint16_t type, uint16_t code, int32_t value) {
+    struct input_event *ev = &pad->ev_batch[pad->ev_batch_len++];
+    memset(ev, 0, sizeof(*ev));
+    ev->type = type;
+    ev->code = code;
+    ev->value = value;
+    if ((type == EV_SYN && code == SYN_REPORT) || pad->ev_batch_len >= 64) {
+        flush_ev(pad);
+    }
+}
+
+static void handle_uinput_ff(PadInstance *pad) {
     struct input_event uev;
-    while (read(ufd, &uev, sizeof(uev)) == (ssize_t)sizeof(uev)) {
+    while (read(pad->ufd, &uev, sizeof(uev)) == (ssize_t)sizeof(uev)) {
         if (uev.type == EV_UINPUT) {
             if (uev.code == UI_FF_UPLOAD) {
                 struct uinput_ff_upload up;
                 memset(&up, 0, sizeof(up));
                 up.request_id = (uint32_t)uev.value;
-                if (ioctl(ufd, UI_BEGIN_FF_UPLOAD, &up) == 0) {
+                if (ioctl(pad->ufd, UI_BEGIN_FF_UPLOAD, &up) == 0) {
                     int uid = up.effect.id;
                     struct ff_effect eff = up.effect;
-                    eff.id = (uid >= 0 && uid < MAX_FF_EFFECTS) ? rt->ff_map[uid] : -1;
+                    eff.id = (uid >= 0 && uid < MAX_FF_EFFECTS) ? pad->rt.ff_map[uid] : -1;
                     if (eff.type == FF_RUMBLE) {
-                        double g = (double)cfg->rumble_gain / 100.0;
+                        double g = (double)pad->cfg.rumble_gain / 100.0;
                         eff.u.rumble.strong_magnitude = (uint16_t)llround(eff.u.rumble.strong_magnitude * g);
                         eff.u.rumble.weak_magnitude = (uint16_t)llround(eff.u.rumble.weak_magnitude * g);
                     }
-                    if (ioctl(src_fd, EVIOCSFF, &eff) == 0 && uid >= 0 && uid < MAX_FF_EFFECTS) {
-                        rt->ff_map[uid] = eff.id;
+                    if (ioctl(pad->src_fd, EVIOCSFF, &eff) == 0 && uid >= 0 && uid < MAX_FF_EFFECTS) {
+                        pad->rt.ff_map[uid] = eff.id;
                     }
                     up.retval = 0;
-                    ioctl(ufd, UI_END_FF_UPLOAD, &up);
+                    ioctl(pad->ufd, UI_END_FF_UPLOAD, &up);
                 }
             } else if (uev.code == UI_FF_ERASE) {
                 struct uinput_ff_erase er;
                 memset(&er, 0, sizeof(er));
                 er.request_id = (uint32_t)uev.value;
-                if (ioctl(ufd, UI_BEGIN_FF_ERASE, &er) == 0) {
-                    if (er.effect_id < MAX_FF_EFFECTS && rt->ff_map[er.effect_id] >= 0) {
-                        ioctl(src_fd, EVIOCRMFF, rt->ff_map[er.effect_id]);
-                        rt->ff_map[er.effect_id] = -1;
+                if (ioctl(pad->ufd, UI_BEGIN_FF_ERASE, &er) == 0) {
+                    if (er.effect_id < MAX_FF_EFFECTS && pad->rt.ff_map[er.effect_id] >= 0) {
+                        ioctl(pad->src_fd, EVIOCRMFF, pad->rt.ff_map[er.effect_id]);
+                        pad->rt.ff_map[er.effect_id] = -1;
                     }
                     er.retval = 0;
-                    ioctl(ufd, UI_END_FF_ERASE, &er);
+                    ioctl(pad->ufd, UI_END_FF_ERASE, &er);
                 }
             }
         } else if (uev.type == EV_FF) {
-            if (uev.code < MAX_FF_EFFECTS && rt->ff_map[uev.code] >= 0) {
+            if (uev.code < MAX_FF_EFFECTS && pad->rt.ff_map[uev.code] >= 0) {
                 struct input_event play;
                 memset(&play, 0, sizeof(play));
                 play.type = EV_FF;
-                play.code = (uint16_t)rt->ff_map[uev.code];
-                play.value = (cfg->rumble_gain > 0) ? uev.value : 0;
-                ssize_t unused = write(src_fd, &play, sizeof(play));
+                play.code = (uint16_t)pad->rt.ff_map[uev.code];
+                play.value = (pad->cfg.rumble_gain > 0) ? uev.value : 0;
+                ssize_t unused = write(pad->src_fd, &play, sizeof(play));
                 (void)unused;
             }
         }
     }
 }
 
-static void emit_corrected_sticks(int ufd, const Config *cfg, const PadRuntime *rt, int which) {
+static void emit_corrected_sticks(PadInstance *pad, int which) {
+    const Config *cfg = &pad->cfg;
+    const PadRuntime *rt = &pad->rt;
     if (which == 0 || which == 2) {
         if (rt->override_l) {
-            emit_ev(ufd, EV_ABS, ABS_X, rt->override_lx);
-            emit_ev(ufd, EV_ABS, ABS_Y, rt->override_ly);
+            emit_ev(pad, EV_ABS, ABS_X, rt->override_lx);
+            emit_ev(pad, EV_ABS, ABS_Y, rt->override_ly);
         } else {
             int ox, oy;
             apply_stick_transform(
@@ -812,14 +959,14 @@ static void emit_corrected_sticks(int ufd, const Config *cfg, const PadRuntime *
                 normalize_axis(rt->raw_ly, cfg->center_ly),
                 cfg->dz_l, cfg->dz_mode, cfg->outer_comp_l,
                 cfg->response_curve, &ox, &oy);
-            emit_ev(ufd, EV_ABS, ABS_X, ox);
-            emit_ev(ufd, EV_ABS, ABS_Y, oy);
+            emit_ev(pad, EV_ABS, ABS_X, ox);
+            emit_ev(pad, EV_ABS, ABS_Y, oy);
         }
     }
     if (which == 1 || which == 2) {
         if (rt->override_r) {
-            emit_ev(ufd, EV_ABS, ABS_RX, rt->override_rx);
-            emit_ev(ufd, EV_ABS, ABS_RY, rt->override_ry);
+            emit_ev(pad, EV_ABS, ABS_RX, rt->override_rx);
+            emit_ev(pad, EV_ABS, ABS_RY, rt->override_ry);
         } else {
             int ox, oy;
             apply_stick_transform(
@@ -827,64 +974,67 @@ static void emit_corrected_sticks(int ufd, const Config *cfg, const PadRuntime *
                 normalize_axis(rt->raw_ry, cfg->center_ry),
                 cfg->dz_r, cfg->dz_mode, cfg->outer_comp_r,
                 cfg->response_curve, &ox, &oy);
-            emit_ev(ufd, EV_ABS, ABS_RX, ox);
-            emit_ev(ufd, EV_ABS, ABS_RY, oy);
+            emit_ev(pad, EV_ABS, ABS_RX, ox);
+            emit_ev(pad, EV_ABS, ABS_RY, oy);
         }
     }
 }
 
-static void release_macro_held(int ufd, MacroDef *m, const Config *cfg, PadRuntime *rt) {
+static void release_macro_held(PadInstance *pad, MacroDef *m) {
+    PadRuntime *rt = &pad->rt;
     int changed = 0;
     for (int i = 0; i < NUM_STD_KEYS; i++) {
         if (m->held_btns & (1U << i)) {
-            emit_ev(ufd, EV_KEY, (uint16_t)STD_KEYS[i], rt->phys_btn[i] ? 1 : 0);
+            emit_ev(pad, EV_KEY, (uint16_t)STD_KEYS[i], rt->phys_btn[i] ? 1 : 0);
             changed = 1;
         }
     }
     m->held_btns = 0;
 
     if (m->held_lt) {
-        emit_ev(ufd, EV_ABS, ABS_Z, rt->phys_lt);
+        emit_ev(pad, EV_ABS, ABS_Z, rt->phys_lt);
         m->held_lt = 0;
         changed = 1;
     }
     if (m->held_rt) {
-        emit_ev(ufd, EV_ABS, ABS_RZ, rt->phys_rt);
+        emit_ev(pad, EV_ABS, ABS_RZ, rt->phys_rt);
         m->held_rt = 0;
         changed = 1;
     }
     if (m->held_hat) {
-        emit_ev(ufd, EV_ABS, ABS_HAT0X, rt->phys_hx);
-        emit_ev(ufd, EV_ABS, ABS_HAT0Y, rt->phys_hy);
+        emit_ev(pad, EV_ABS, ABS_HAT0X, rt->phys_hx);
+        emit_ev(pad, EV_ABS, ABS_HAT0Y, rt->phys_hy);
         m->held_hat = 0;
         changed = 1;
     }
     if (m->held_stick_l) {
         rt->override_l = 0;
-        emit_corrected_sticks(ufd, cfg, rt, 0);
+        emit_corrected_sticks(pad, 0);
         m->held_stick_l = 0;
         changed = 1;
     }
     if (m->held_stick_r) {
         rt->override_r = 0;
-        emit_corrected_sticks(ufd, cfg, rt, 1);
+        emit_corrected_sticks(pad, 1);
         m->held_stick_r = 0;
         changed = 1;
     }
-    if (changed) emit_ev(ufd, EV_SYN, SYN_REPORT, 0);
+    if (changed) emit_ev(pad, EV_SYN, SYN_REPORT, 0);
 }
 
-static void release_all_macros(int ufd, MacroTable *mt, const Config *cfg, PadRuntime *rt) {
-    for (int i = 0; i < mt->count; i++) {
-        mt->items[i].active = 0;
-        mt->items[i].toggle_on = 0;
-        release_macro_held(ufd, &mt->items[i], cfg, rt);
+static void release_all_macros(PadInstance *pad) {
+    for (int i = 0; i < pad->macros.count; i++) {
+        pad->macros.items[i].active = 0;
+        pad->macros.items[i].toggle_on = 0;
+        release_macro_held(pad, &pad->macros.items[i]);
     }
 }
 
-static int step_macros(int ufd, MacroTable *mt, const Config *cfg, PadRuntime *rt) {
+static int step_macros(PadInstance *pad) {
     int64_t now = monotonic_ms();
     int min_wait = 250;
+    PadRuntime *rt = &pad->rt;
+    MacroTable *mt = &pad->macros;
 
     for (int i = 0; i < mt->count; i++) {
         MacroDef *m = &mt->items[i];
@@ -905,7 +1055,7 @@ static int step_macros(int ufd, MacroTable *mt, const Config *cfg, PadRuntime *r
                     break;
                 } else {
                     m->active = 0;
-                    release_macro_held(ufd, m, cfg, rt);
+                    release_macro_held(pad, m);
                     break;
                 }
             }
@@ -918,17 +1068,17 @@ static int step_macros(int ufd, MacroTable *mt, const Config *cfg, PadRuntime *r
                     if (st->v1) m->held_btns |= (uint16_t)(1U << idx);
                     else m->held_btns &= (uint16_t)~(1U << idx);
                 }
-                emit_ev(ufd, EV_KEY, (uint16_t)st->code, st->v1);
+                emit_ev(pad, EV_KEY, (uint16_t)st->code, st->v1);
                 dirty_syn = 1;
             } else if (st->kind == STEP_HAT) {
                 m->held_hat = 1;
-                emit_ev(ufd, EV_ABS, ABS_HAT0X, st->v1);
-                emit_ev(ufd, EV_ABS, ABS_HAT0Y, st->v2);
+                emit_ev(pad, EV_ABS, ABS_HAT0X, st->v1);
+                emit_ev(pad, EV_ABS, ABS_HAT0Y, st->v2);
                 dirty_syn = 1;
             } else if (st->kind == STEP_TRIG) {
                 if (st->code == ABS_Z) m->held_lt = 1;
                 else m->held_rt = 1;
-                emit_ev(ufd, EV_ABS, (uint16_t)st->code, st->v1);
+                emit_ev(pad, EV_ABS, (uint16_t)st->code, st->v1);
                 dirty_syn = 1;
             } else if (st->kind == STEP_STICK) {
                 if (st->code == 0) {
@@ -936,24 +1086,24 @@ static int step_macros(int ufd, MacroTable *mt, const Config *cfg, PadRuntime *r
                     rt->override_l = 1;
                     rt->override_lx = st->v1;
                     rt->override_ly = st->v2;
-                    emit_corrected_sticks(ufd, cfg, rt, 0);
+                    emit_corrected_sticks(pad, 0);
                 } else {
                     m->held_stick_r = 1;
                     rt->override_r = 1;
                     rt->override_rx = st->v1;
                     rt->override_ry = st->v2;
-                    emit_corrected_sticks(ufd, cfg, rt, 1);
+                    emit_corrected_sticks(pad, 1);
                 }
                 dirty_syn = 1;
             } else if (st->kind == STEP_STICK_REL) {
                 if (st->code == 0) {
                     m->held_stick_l = 0;
                     rt->override_l = 0;
-                    emit_corrected_sticks(ufd, cfg, rt, 0);
+                    emit_corrected_sticks(pad, 0);
                 } else {
                     m->held_stick_r = 0;
                     rt->override_r = 0;
-                    emit_corrected_sticks(ufd, cfg, rt, 1);
+                    emit_corrected_sticks(pad, 1);
                 }
                 dirty_syn = 1;
             } else if (st->kind == STEP_WAIT) {
@@ -961,7 +1111,7 @@ static int step_macros(int ufd, MacroTable *mt, const Config *cfg, PadRuntime *r
                 break;
             }
 
-            if (dirty_syn) emit_ev(ufd, EV_SYN, SYN_REPORT, 0);
+            if (dirty_syn) emit_ev(pad, EV_SYN, SYN_REPORT, 0);
             now = monotonic_ms();
         }
 
@@ -974,273 +1124,452 @@ static int step_macros(int ufd, MacroTable *mt, const Config *cfg, PadRuntime *r
     return min_wait;
 }
 
+static void sync_initial_pad_state(PadInstance *pad) {
+    struct input_absinfo info;
+    HardwareMap *hm = &pad->hm;
+    PadRuntime *rt = &pad->rt;
+    if (hm->lx_code >= 0 && ioctl(pad->src_fd, EVIOCGABS(hm->lx_code), &info) == 0) {
+        rt->raw_lx = scale_hw_to_i16(info.value, hm->lx_min, hm->lx_max);
+    }
+    if (hm->ly_code >= 0 && ioctl(pad->src_fd, EVIOCGABS(hm->ly_code), &info) == 0) {
+        rt->raw_ly = scale_hw_to_i16(info.value, hm->ly_min, hm->ly_max);
+    }
+    if (hm->rx_code >= 0 && ioctl(pad->src_fd, EVIOCGABS(hm->rx_code), &info) == 0) {
+        rt->raw_rx = scale_hw_to_i16(info.value, hm->rx_min, hm->rx_max);
+    }
+    if (hm->ry_code >= 0 && ioctl(pad->src_fd, EVIOCGABS(hm->ry_code), &info) == 0) {
+        rt->raw_ry = scale_hw_to_i16(info.value, hm->ry_min, hm->ry_max);
+    }
+    if (hm->lt_code >= 0 && ioctl(pad->src_fd, EVIOCGABS(hm->lt_code), &info) == 0) {
+        rt->phys_lt = scale_trig_to_1023(info.value, hm->lt_min, hm->lt_max);
+    }
+    if (hm->rt_code >= 0 && ioctl(pad->src_fd, EVIOCGABS(hm->rt_code), &info) == 0) {
+        rt->phys_rt = scale_trig_to_1023(info.value, hm->rt_min, hm->rt_max);
+    }
+    if (ioctl(pad->src_fd, EVIOCGABS(ABS_HAT0X), &info) == 0) rt->phys_hx = info.value;
+    if (ioctl(pad->src_fd, EVIOCGABS(ABS_HAT0Y), &info) == 0) rt->phys_hy = info.value;
+
+    emit_corrected_sticks(pad, 2);
+    emit_ev(pad, EV_SYN, SYN_REPORT, 0);
+}
+
+static int pad_already_attached(const PadInstance *pads, const char *dev_path) {
+    for (int i = 0; i < MAX_PADS; i++) {
+        if (pads[i].active && strcmp(pads[i].dev_path, dev_path) == 0) return 1;
+    }
+    return 0;
+}
+
+static void detach_pad(PadInstance *pad) {
+    if (!pad->active) return;
+    if (pad->ufd >= 0) {
+        release_all_macros(pad);
+        flush_ev(pad);
+        ioctl(pad->ufd, UI_DEV_DESTROY);
+        close(pad->ufd);
+        pad->ufd = -1;
+    }
+    if (pad->src_fd >= 0) {
+        ioctl(pad->src_fd, EVIOCGRAB, (void *)0);
+        close(pad->src_fd);
+        pad->src_fd = -1;
+    }
+    pad->active = 0;
+}
+
+static int attach_pad(PadInstance *pads, const char *ev_name, const char *dev_path, const Config *global_cfg) {
+    if (pad_already_attached(pads, dev_path)) return 0;
+
+    int slot = -1;
+    for (int i = 0; i < MAX_PADS; i++) {
+        if (!pads[i].active) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot < 0) return -1;
+
+    int src_is_rw = 1;
+    int src_fd = open(dev_path, O_RDWR | O_NONBLOCK);
+    if (src_fd < 0) {
+        src_is_rw = 0;
+        src_fd = open(dev_path, O_RDONLY | O_NONBLOCK);
+    }
+    if (src_fd < 0) return -1;
+
+    if (ioctl(src_fd, EVIOCGRAB, (void *)1) < 0) {
+        close(src_fd);
+        return -1;
+    }
+
+    char stable_id[192];
+    compute_device_stable_id(ev_name, stable_id, sizeof(stable_id));
+    Config pad_cfg = load_device_config(global_cfg, stable_id);
+    HardwareMap hm = probe_hardware_map(src_fd, src_is_rw);
+    int ufd = setup_uinput(pad_cfg.low_latency, hm.has_ff_rumble, pad_cfg.virtual_name, ev_name);
+    if (ufd < 0) {
+        ioctl(src_fd, EVIOCGRAB, (void *)0);
+        close(src_fd);
+        return -1;
+    }
+
+    PadInstance *pad = &pads[slot];
+    memset(pad, 0, sizeof(*pad));
+    pad->active = 1;
+    snprintf(pad->dev_path, sizeof(pad->dev_path), "%s", dev_path);
+    snprintf(pad->ev_name, sizeof(pad->ev_name), "%s", ev_name);
+    snprintf(pad->stable_id, sizeof(pad->stable_id), "%s", stable_id);
+    pad->src_fd = src_fd;
+    pad->src_is_rw = src_is_rw;
+    pad->ufd = ufd;
+    pad->cfg = pad_cfg;
+    pad->hm = hm;
+    pad->macros = load_macros();
+    for (int i = 0; i < MAX_FF_EFFECTS; i++) pad->rt.ff_map[i] = -1;
+    pad->rt.raw_lx = pad_cfg.center_lx;
+    pad->rt.raw_ly = pad_cfg.center_ly;
+    pad->rt.raw_rx = pad_cfg.center_rx;
+    pad->rt.raw_ry = pad_cfg.center_ry;
+
+    sync_initial_pad_state(pad);
+    return 0;
+}
+
+static void refresh_low_latency(const PadInstance *pads, const Config *global_cfg) {
+    int want_ll = global_cfg->low_latency;
+    for (int i = 0; i < MAX_PADS; i++) {
+        if (pads[i].active && pads[i].cfg.low_latency) want_ll = 1;
+    }
+    apply_low_latency_os(want_ll);
+}
+
+static void scan_and_sync_pads(PadInstance *pads, const Config *global_cfg) {
+    GamepadCandidate cands[16];
+    int count = list_gamepad_candidates(cands, 16);
+
+    if (!global_cfg->multi_controller) {
+        const char *chosen_ev = NULL;
+        const char *chosen_dev = NULL;
+        if (global_cfg->device_path[0] && strcmp(global_cfg->device_path, "auto") != 0) {
+            for (int i = 0; i < count; i++) {
+                if (strcmp(cands[i].dev_node, global_cfg->device_path) == 0) {
+                    chosen_ev = cands[i].ev_name;
+                    chosen_dev = cands[i].dev_node;
+                    break;
+                }
+            }
+        }
+        if (!chosen_dev && count > 0) {
+            chosen_ev = cands[0].ev_name;
+            chosen_dev = cands[0].dev_node;
+        }
+        for (int i = 0; i < MAX_PADS; i++) {
+            if (pads[i].active && (!chosen_dev || strcmp(pads[i].dev_path, chosen_dev) != 0)) {
+                detach_pad(&pads[i]);
+            }
+        }
+        if (chosen_dev && chosen_ev) {
+            attach_pad(pads, chosen_ev, chosen_dev, global_cfg);
+        }
+    } else {
+        for (int i = 0; i < count; i++) {
+            attach_pad(pads, cands[i].ev_name, cands[i].dev_node, global_cfg);
+        }
+    }
+
+    refresh_low_latency(pads, global_cfg);
+}
+
+static void reload_all_pads(PadInstance *pads, Config *global_cfg) {
+    *global_cfg = load_global_config();
+
+    for (int i = 0; i < MAX_PADS; i++) {
+        PadInstance *pad = &pads[i];
+        if (!pad->active) continue;
+
+        if (!global_cfg->multi_controller &&
+            global_cfg->device_path[0] &&
+            strcmp(global_cfg->device_path, "auto") != 0 &&
+            strcmp(pad->dev_path, global_cfg->device_path) != 0) {
+            detach_pad(pad);
+            continue;
+        }
+
+        release_all_macros(pad);
+        Config new_cfg = load_device_config(global_cfg, pad->stable_id);
+        int recreate_uinput = (
+            strcmp(new_cfg.virtual_name, pad->cfg.virtual_name) != 0 ||
+            new_cfg.low_latency != pad->cfg.low_latency
+        );
+
+        pad->cfg = new_cfg;
+        pad->macros = load_macros();
+
+        if (recreate_uinput) {
+            flush_ev(pad);
+            ioctl(pad->ufd, UI_DEV_DESTROY);
+            close(pad->ufd);
+            for (int f = 0; f < MAX_FF_EFFECTS; f++) pad->rt.ff_map[f] = -1;
+            pad->ufd = setup_uinput(
+                pad->cfg.low_latency, pad->hm.has_ff_rumble, pad->cfg.virtual_name, pad->ev_name);
+            if (pad->ufd < 0) {
+                detach_pad(pad);
+                continue;
+            }
+        }
+
+        emit_corrected_sticks(pad, 2);
+        emit_ev(pad, EV_ABS, ABS_Z, apply_hair_trigger(pad->rt.phys_lt, pad->cfg.hair_trigger));
+        emit_ev(pad, EV_ABS, ABS_RZ, apply_hair_trigger(pad->rt.phys_rt, pad->cfg.hair_trigger));
+        emit_ev(pad, EV_SYN, SYN_REPORT, 0);
+    }
+
+    scan_and_sync_pads(pads, global_cfg);
+}
+
+static int process_pad_events(PadInstance *pad) {
+    HardwareMap *hm = &pad->hm;
+    PadRuntime *rt = &pad->rt;
+    const Config *cfg = &pad->cfg;
+    MacroTable *macros = &pad->macros;
+
+    struct input_event ev_buf[64];
+    int io_err = 0;
+
+    while (running) {
+        ssize_t n = read(pad->src_fd, ev_buf, sizeof(ev_buf));
+        if (n < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+            if (errno == EINTR) continue;
+            io_err = 1;
+            break;
+        }
+        if (n == 0) {
+            io_err = 1;
+            break;
+        }
+        int count = (int)(n / (ssize_t)sizeof(struct input_event));
+        int64_t ev_now_ms = (cfg->debounce_ms > 0) ? monotonic_ms() : 0;
+
+        for (int ei = 0; ei < count; ei++) {
+            struct input_event ev = ev_buf[ei];
+            if (ev.type == EV_ABS) {
+                if (ev.code == hm->lx_code) {
+                    rt->raw_lx = scale_hw_to_i16(ev.value, hm->lx_min, hm->lx_max);
+                    pad->dirty_l = 1;
+                } else if (ev.code == hm->ly_code) {
+                    rt->raw_ly = scale_hw_to_i16(ev.value, hm->ly_min, hm->ly_max);
+                    pad->dirty_l = 1;
+                } else if (ev.code == hm->rx_code) {
+                    rt->raw_rx = scale_hw_to_i16(ev.value, hm->rx_min, hm->rx_max);
+                    pad->dirty_r = 1;
+                } else if (ev.code == hm->ry_code) {
+                    rt->raw_ry = scale_hw_to_i16(ev.value, hm->ry_min, hm->ry_max);
+                    pad->dirty_r = 1;
+                } else if (ev.code == hm->lt_code) {
+                    rt->phys_lt = scale_trig_to_1023(ev.value, hm->lt_min, hm->lt_max);
+                    emit_ev(pad, EV_ABS, ABS_Z, apply_hair_trigger(rt->phys_lt, cfg->hair_trigger));
+                } else if (ev.code == hm->rt_code) {
+                    rt->phys_rt = scale_trig_to_1023(ev.value, hm->rt_min, hm->rt_max);
+                    emit_ev(pad, EV_ABS, ABS_RZ, apply_hair_trigger(rt->phys_rt, cfg->hair_trigger));
+                } else if (ev.code == ABS_HAT0X) {
+                    rt->phys_hx = (ev.value < 0) ? -1 : ((ev.value > 0) ? 1 : 0);
+                    emit_ev(pad, EV_ABS, ABS_HAT0X, rt->phys_hx);
+                } else if (ev.code == ABS_HAT0Y) {
+                    rt->phys_hy = (ev.value < 0) ? -1 : ((ev.value > 0) ? 1 : 0);
+                    emit_ev(pad, EV_ABS, ABS_HAT0Y, rt->phys_hy);
+                }
+            } else if (ev.type == EV_SYN && ev.code == SYN_REPORT) {
+                if (pad->dirty_l) {
+                    emit_corrected_sticks(pad, 0);
+                    pad->dirty_l = 0;
+                }
+                if (pad->dirty_r) {
+                    emit_corrected_sticks(pad, 1);
+                    pad->dirty_r = 0;
+                }
+                emit_ev(pad, EV_SYN, SYN_REPORT, 0);
+            } else if (ev.type == EV_KEY) {
+                int intercepted = 0;
+                for (int i = 0; i < macros->count; i++) {
+                    MacroDef *m = &macros->items[i];
+                    if (!m->enabled || m->trigger_code != ev.code) continue;
+                    if (m->intercept) intercepted = 1;
+
+                    if (ev.value == 1) {
+                        m->trigger_down = 1;
+                        if (m->mode == MODE_TOGGLE) {
+                            m->toggle_on = !m->toggle_on;
+                            if (m->toggle_on) {
+                                m->active = 1;
+                                m->step_idx = 0;
+                                m->next_ms = monotonic_ms();
+                            } else {
+                                m->active = 0;
+                                release_macro_held(pad, m);
+                            }
+                        } else {
+                            m->active = 1;
+                            m->step_idx = 0;
+                            m->next_ms = monotonic_ms();
+                        }
+                    } else if (ev.value == 0) {
+                        m->trigger_down = 0;
+                        if (m->mode == MODE_HOLD_REPEAT || m->mode == MODE_HOLD_MIRROR) {
+                            m->active = 0;
+                            release_macro_held(pad, m);
+                        }
+                    }
+                }
+
+                if (intercepted) continue;
+
+                if (ev.code == hm->dig_lt_code) {
+                    rt->phys_lt = ev.value ? 1023 : 0;
+                    emit_ev(pad, EV_ABS, ABS_Z, rt->phys_lt);
+                    emit_ev(pad, EV_SYN, SYN_REPORT, 0);
+                    continue;
+                }
+                if (ev.code == hm->dig_rt_code) {
+                    rt->phys_rt = ev.value ? 1023 : 0;
+                    emit_ev(pad, EV_ABS, ABS_RZ, rt->phys_rt);
+                    emit_ev(pad, EV_SYN, SYN_REPORT, 0);
+                    continue;
+                }
+
+                if (hm->use_dpad_btns &&
+                    (ev.code == BTN_DPAD_UP || ev.code == BTN_DPAD_DOWN ||
+                     ev.code == BTN_DPAD_LEFT || ev.code == BTN_DPAD_RIGHT)) {
+                    int v = ev.value ? 1 : 0;
+                    if (ev.code == BTN_DPAD_UP) rt->dpad_u = v;
+                    else if (ev.code == BTN_DPAD_DOWN) rt->dpad_d = v;
+                    else if (ev.code == BTN_DPAD_LEFT) rt->dpad_l = v;
+                    else if (ev.code == BTN_DPAD_RIGHT) rt->dpad_r = v;
+                    rt->phys_hx = rt->dpad_r - rt->dpad_l;
+                    rt->phys_hy = rt->dpad_d - rt->dpad_u;
+                    emit_ev(pad, EV_ABS, ABS_HAT0X, rt->phys_hx);
+                    emit_ev(pad, EV_ABS, ABS_HAT0Y, rt->phys_hy);
+                    emit_ev(pad, EV_SYN, SYN_REPORT, 0);
+                    continue;
+                }
+
+                int target_code = hm->use_generic_joy_btns
+                    ? translate_generic_button(ev.code)
+                    : ev.code;
+                target_code = apply_nintendo_swap(target_code, cfg->swap_nintendo);
+                int idx = std_key_index(target_code);
+                if (idx >= 0) {
+                    int state_val = ev.value ? 1 : 0;
+                    if (ev.value != 2 && cfg->debounce_ms > 0) {
+                        if (state_val == rt->phys_btn[idx]) continue;
+                        if ((ev_now_ms - rt->btn_last_ms[idx]) < (int64_t)cfg->debounce_ms) {
+                            continue;
+                        }
+                        rt->btn_last_ms[idx] = ev_now_ms;
+                    }
+                    rt->phys_btn[idx] = state_val;
+                    emit_ev(pad, EV_KEY, (uint16_t)target_code, ev.value);
+                }
+            }
+        }
+    }
+    return io_err ? -1 : 0;
+}
+
 int main(void) {
     signal(SIGINT, handle_sig);
     signal(SIGTERM, handle_sig);
     signal(SIGHUP, handle_hup);
 
+    PadInstance pads[MAX_PADS];
+    memset(pads, 0, sizeof(pads));
+    for (int i = 0; i < MAX_PADS; i++) {
+        pads[i].src_fd = -1;
+        pads[i].ufd = -1;
+    }
+
+    Config global_cfg = load_global_config();
+    int64_t last_rescan = 0;
+    scan_and_sync_pads(pads, &global_cfg);
+    last_rescan = monotonic_ms();
+
     while (running) {
-        Config cfg = load_config();
-        char dev_path[512];
-        if (find_controller_path(&cfg, dev_path, sizeof(dev_path)) != 0) {
-            sleep(2);
+        if (reload_cfg) {
+            reload_cfg = 0;
+            reload_all_pads(pads, &global_cfg);
+            last_rescan = monotonic_ms();
+        }
+
+        int64_t now = monotonic_ms();
+        if (now - last_rescan >= 1200) {
+            last_rescan = now;
+            scan_and_sync_pads(pads, &global_cfg);
+        }
+
+        struct pollfd pfds[MAX_PADS * 2];
+        int pfd_pad[MAX_PADS * 2];
+        int pfd_is_uinput[MAX_PADS * 2];
+        nfds_t nfds = 0;
+        int min_wait = 450;
+
+        for (int i = 0; i < MAX_PADS; i++) {
+            if (!pads[i].active) continue;
+            int mw = step_macros(&pads[i]);
+            if (mw < min_wait) min_wait = mw;
+
+            pfds[nfds].fd = pads[i].src_fd;
+            pfds[nfds].events = POLLIN;
+            pfds[nfds].revents = 0;
+            pfd_pad[nfds] = i;
+            pfd_is_uinput[nfds] = 0;
+            nfds++;
+
+            if (pads[i].hm.has_ff_rumble) {
+                pfds[nfds].fd = pads[i].ufd;
+                pfds[nfds].events = POLLIN;
+                pfds[nfds].revents = 0;
+                pfd_pad[nfds] = i;
+                pfd_is_uinput[nfds] = 1;
+                nfds++;
+            }
+        }
+
+        if (nfds == 0) {
+            struct timespec ts = { .tv_sec = 0, .tv_nsec = 450000000L };
+            nanosleep(&ts, NULL);
             continue;
         }
 
-        int src_is_rw = 1;
-        int src_fd = open(dev_path, O_RDWR | O_NONBLOCK);
-        if (src_fd < 0) {
-            src_is_rw = 0;
-            src_fd = open(dev_path, O_RDONLY | O_NONBLOCK);
+        int pr = poll(pfds, nfds, min_wait);
+        if (pr < 0) {
+            if (errno == EINTR) continue;
+            break;
         }
-        if (src_fd < 0) {
-            sleep(2);
-            continue;
-        }
+        if (pr == 0) continue;
 
-        if (ioctl(src_fd, EVIOCGRAB, (void *)1) < 0) {
-            perror("EVIOCGRAB");
-            close(src_fd);
-            sleep(2);
-            continue;
-        }
+        for (nfds_t k = 0; k < nfds; k++) {
+            if (pfds[k].revents == 0) continue;
+            int idx = pfd_pad[k];
+            if (!pads[idx].active) continue;
 
-        apply_low_latency_os(cfg.low_latency);
-        HardwareMap hm = probe_hardware_map(src_fd, src_is_rw);
-        int ufd = setup_uinput(cfg.low_latency, hm.has_ff_rumble);
-        if (ufd < 0) {
-            ioctl(src_fd, EVIOCGRAB, (void *)0);
-            close(src_fd);
-            sleep(2);
-            continue;
-        }
-
-        MacroTable macros = load_macros();
-        PadRuntime rt;
-        memset(&rt, 0, sizeof(rt));
-        for (int i = 0; i < MAX_FF_EFFECTS; i++) rt.ff_map[i] = -1;
-        rt.raw_lx = cfg.center_lx;
-        rt.raw_ly = cfg.center_ly;
-        rt.raw_rx = cfg.center_rx;
-        rt.raw_ry = cfg.center_ry;
-
-        struct input_absinfo info;
-        if (hm.lx_code >= 0 && ioctl(src_fd, EVIOCGABS(hm.lx_code), &info) == 0) {
-            rt.raw_lx = scale_hw_to_i16(info.value, hm.lx_min, hm.lx_max);
-        }
-        if (hm.ly_code >= 0 && ioctl(src_fd, EVIOCGABS(hm.ly_code), &info) == 0) {
-            rt.raw_ly = scale_hw_to_i16(info.value, hm.ly_min, hm.ly_max);
-        }
-        if (hm.rx_code >= 0 && ioctl(src_fd, EVIOCGABS(hm.rx_code), &info) == 0) {
-            rt.raw_rx = scale_hw_to_i16(info.value, hm.rx_min, hm.rx_max);
-        }
-        if (hm.ry_code >= 0 && ioctl(src_fd, EVIOCGABS(hm.ry_code), &info) == 0) {
-            rt.raw_ry = scale_hw_to_i16(info.value, hm.ry_min, hm.ry_max);
-        }
-        if (hm.lt_code >= 0 && ioctl(src_fd, EVIOCGABS(hm.lt_code), &info) == 0) {
-            rt.phys_lt = scale_trig_to_1023(info.value, hm.lt_min, hm.lt_max);
-        }
-        if (hm.rt_code >= 0 && ioctl(src_fd, EVIOCGABS(hm.rt_code), &info) == 0) {
-            rt.phys_rt = scale_trig_to_1023(info.value, hm.rt_min, hm.rt_max);
-        }
-        if (ioctl(src_fd, EVIOCGABS(ABS_HAT0X), &info) == 0) rt.phys_hx = info.value;
-        if (ioctl(src_fd, EVIOCGABS(ABS_HAT0Y), &info) == 0) rt.phys_hy = info.value;
-
-        emit_corrected_sticks(ufd, &cfg, &rt, 2);
-        emit_ev(ufd, EV_SYN, SYN_REPORT, 0);
-
-        int dirty_l = 0, dirty_r = 0;
-        struct pollfd pfds[2] = {
-            {.fd = src_fd, .events = POLLIN},
-            {.fd = ufd, .events = POLLIN},
-        };
-        nfds_t nfds = hm.has_ff_rumble ? 2 : 1;
-
-        while (running) {
-            if (reload_cfg) {
-                reload_cfg = 0;
-                release_all_macros(ufd, &macros, &cfg, &rt);
-                Config new_cfg = load_config();
-                if (strcmp(new_cfg.device_path, cfg.device_path) != 0 ||
-                    new_cfg.low_latency != cfg.low_latency) {
-                    break;
+            if (pfds[k].revents & (POLLERR | POLLHUP | POLLNVAL)) {
+                detach_pad(&pads[idx]);
+                continue;
+            }
+            if (pfd_is_uinput[k]) {
+                if (pfds[k].revents & POLLIN) {
+                    handle_uinput_ff(&pads[idx]);
                 }
-                cfg = new_cfg;
-                macros = load_macros();
-                emit_corrected_sticks(ufd, &cfg, &rt, 2);
-                emit_ev(ufd, EV_ABS, ABS_Z, apply_hair_trigger(rt.phys_lt, cfg.hair_trigger));
-                emit_ev(ufd, EV_ABS, ABS_RZ, apply_hair_trigger(rt.phys_rt, cfg.hair_trigger));
-                emit_ev(ufd, EV_SYN, SYN_REPORT, 0);
-            }
-
-            int timeout_ms = step_macros(ufd, &macros, &cfg, &rt);
-            int pr = poll(pfds, nfds, timeout_ms);
-            if (pr < 0) {
-                if (errno == EINTR) continue;
-                break;
-            }
-            if (pr == 0) continue;
-
-            if (pfds[0].revents & (POLLERR | POLLHUP | POLLNVAL)) {
-                break;
-            }
-            if (hm.has_ff_rumble && (pfds[1].revents & (POLLERR | POLLHUP | POLLNVAL))) {
-                break;
-            }
-            if (hm.has_ff_rumble && (pfds[1].revents & POLLIN)) {
-                handle_uinput_ff(ufd, src_fd, &cfg, &rt);
-            }
-            if (!(pfds[0].revents & POLLIN)) continue;
-
-            struct input_event ev_buf[64];
-            int io_err = 0;
-            while (running) {
-                ssize_t n = read(src_fd, ev_buf, sizeof(ev_buf));
-                if (n < 0) {
-                    if (errno == EAGAIN || errno == EWOULDBLOCK) break;
-                    if (errno == EINTR) continue;
-                    io_err = 1;
-                    break;
-                }
-                if (n == 0) {
-                    io_err = 1;
-                    break;
-                }
-                int count = (int)(n / (ssize_t)sizeof(struct input_event));
-                int64_t ev_now_ms = (cfg.debounce_ms > 0) ? monotonic_ms() : 0;
-
-                for (int ei = 0; ei < count; ei++) {
-                    struct input_event ev = ev_buf[ei];
-                    if (ev.type == EV_ABS) {
-                        if (ev.code == hm.lx_code) {
-                            rt.raw_lx = scale_hw_to_i16(ev.value, hm.lx_min, hm.lx_max);
-                            dirty_l = 1;
-                        } else if (ev.code == hm.ly_code) {
-                            rt.raw_ly = scale_hw_to_i16(ev.value, hm.ly_min, hm.ly_max);
-                            dirty_l = 1;
-                        } else if (ev.code == hm.rx_code) {
-                            rt.raw_rx = scale_hw_to_i16(ev.value, hm.rx_min, hm.rx_max);
-                            dirty_r = 1;
-                        } else if (ev.code == hm.ry_code) {
-                            rt.raw_ry = scale_hw_to_i16(ev.value, hm.ry_min, hm.ry_max);
-                            dirty_r = 1;
-                        } else if (ev.code == hm.lt_code) {
-                            rt.phys_lt = scale_trig_to_1023(ev.value, hm.lt_min, hm.lt_max);
-                            emit_ev(ufd, EV_ABS, ABS_Z, apply_hair_trigger(rt.phys_lt, cfg.hair_trigger));
-                        } else if (ev.code == hm.rt_code) {
-                            rt.phys_rt = scale_trig_to_1023(ev.value, hm.rt_min, hm.rt_max);
-                            emit_ev(ufd, EV_ABS, ABS_RZ, apply_hair_trigger(rt.phys_rt, cfg.hair_trigger));
-                        } else if (ev.code == ABS_HAT0X) {
-                            rt.phys_hx = (ev.value < 0) ? -1 : ((ev.value > 0) ? 1 : 0);
-                            emit_ev(ufd, EV_ABS, ABS_HAT0X, rt.phys_hx);
-                        } else if (ev.code == ABS_HAT0Y) {
-                            rt.phys_hy = (ev.value < 0) ? -1 : ((ev.value > 0) ? 1 : 0);
-                            emit_ev(ufd, EV_ABS, ABS_HAT0Y, rt.phys_hy);
-                        }
-                    } else if (ev.type == EV_SYN && ev.code == SYN_REPORT) {
-                        if (dirty_l) {
-                            emit_corrected_sticks(ufd, &cfg, &rt, 0);
-                            dirty_l = 0;
-                        }
-                        if (dirty_r) {
-                            emit_corrected_sticks(ufd, &cfg, &rt, 1);
-                            dirty_r = 0;
-                        }
-                        emit_ev(ufd, EV_SYN, SYN_REPORT, 0);
-                    } else if (ev.type == EV_KEY) {
-                        int intercepted = 0;
-                        for (int i = 0; i < macros.count; i++) {
-                            MacroDef *m = &macros.items[i];
-                            if (!m->enabled || m->trigger_code != ev.code) continue;
-                            if (m->intercept) intercepted = 1;
-
-                            if (ev.value == 1) {
-                                m->trigger_down = 1;
-                                if (m->mode == MODE_TOGGLE) {
-                                    m->toggle_on = !m->toggle_on;
-                                    if (m->toggle_on) {
-                                        m->active = 1;
-                                        m->step_idx = 0;
-                                        m->next_ms = monotonic_ms();
-                                    } else {
-                                        m->active = 0;
-                                        release_macro_held(ufd, m, &cfg, &rt);
-                                    }
-                                } else {
-                                    m->active = 1;
-                                    m->step_idx = 0;
-                                    m->next_ms = monotonic_ms();
-                                }
-                            } else if (ev.value == 0) {
-                                m->trigger_down = 0;
-                                if (m->mode == MODE_HOLD_REPEAT || m->mode == MODE_HOLD_MIRROR) {
-                                    m->active = 0;
-                                    release_macro_held(ufd, m, &cfg, &rt);
-                                }
-                            }
-                        }
-
-                        if (intercepted) continue;
-
-                        if (ev.code == hm.dig_lt_code) {
-                            rt.phys_lt = ev.value ? 1023 : 0;
-                            emit_ev(ufd, EV_ABS, ABS_Z, rt.phys_lt);
-                            emit_ev(ufd, EV_SYN, SYN_REPORT, 0);
-                            continue;
-                        }
-                        if (ev.code == hm.dig_rt_code) {
-                            rt.phys_rt = ev.value ? 1023 : 0;
-                            emit_ev(ufd, EV_ABS, ABS_RZ, rt.phys_rt);
-                            emit_ev(ufd, EV_SYN, SYN_REPORT, 0);
-                            continue;
-                        }
-
-                        if (hm.use_dpad_btns &&
-                            (ev.code == BTN_DPAD_UP || ev.code == BTN_DPAD_DOWN ||
-                             ev.code == BTN_DPAD_LEFT || ev.code == BTN_DPAD_RIGHT)) {
-                            int v = ev.value ? 1 : 0;
-                            if (ev.code == BTN_DPAD_UP) rt.dpad_u = v;
-                            else if (ev.code == BTN_DPAD_DOWN) rt.dpad_d = v;
-                            else if (ev.code == BTN_DPAD_LEFT) rt.dpad_l = v;
-                            else if (ev.code == BTN_DPAD_RIGHT) rt.dpad_r = v;
-                            rt.phys_hx = rt.dpad_r - rt.dpad_l;
-                            rt.phys_hy = rt.dpad_d - rt.dpad_u;
-                            emit_ev(ufd, EV_ABS, ABS_HAT0X, rt.phys_hx);
-                            emit_ev(ufd, EV_ABS, ABS_HAT0Y, rt.phys_hy);
-                            emit_ev(ufd, EV_SYN, SYN_REPORT, 0);
-                            continue;
-                        }
-
-                        int target_code = hm.use_generic_joy_btns
-                            ? translate_generic_button(ev.code)
-                            : ev.code;
-                        target_code = apply_nintendo_swap(target_code, cfg.swap_nintendo);
-                        int idx = std_key_index(target_code);
-                        if (idx >= 0) {
-                            int state_val = ev.value ? 1 : 0;
-                            if (ev.value != 2 && cfg.debounce_ms > 0) {
-                                if (state_val == rt.phys_btn[idx]) continue;
-                                if ((ev_now_ms - rt.btn_last_ms[idx]) < (int64_t)cfg.debounce_ms) {
-                                    continue;
-                                }
-                                rt.btn_last_ms[idx] = ev_now_ms;
-                            }
-                            rt.phys_btn[idx] = state_val;
-                            emit_ev(ufd, EV_KEY, (uint16_t)target_code, ev.value);
-                        }
-                    }
+            } else if (pfds[k].revents & POLLIN) {
+                if (process_pad_events(&pads[idx]) < 0) {
+                    detach_pad(&pads[idx]);
                 }
             }
-            if (io_err) break;
         }
+    }
 
-        release_all_macros(ufd, &macros, &cfg, &rt);
-        flush_ev(ufd);
-        g_ev_batch_len = 0;
-        ioctl(ufd, UI_DEV_DESTROY);
-        close(ufd);
-        ioctl(src_fd, EVIOCGRAB, (void *)0);
-        close(src_fd);
+    for (int i = 0; i < MAX_PADS; i++) {
+        detach_pad(&pads[i]);
     }
     return 0;
 }

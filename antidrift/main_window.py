@@ -39,9 +39,13 @@ from PySide6.QtWidgets import (
 from .clips.clips_tab import ClipsTabWidget
 from .config import (
     DEFAULT_CONFIG_PATH,
+    DEFAULT_VIRTUAL_NAME,
     AntiDriftConfig,
     load_config,
+    load_device_config,
+    sanitize_virtual_name,
     save_config,
+    save_device_config,
 )
 from .deps import DependencyReport, check_dependencies, install_missing_dependencies
 from .evdev_reader import (
@@ -454,6 +458,9 @@ class MainWindow(QMainWindow):
 
         self._saved_config = load_config()
         self._config = self._saved_config.copy()
+        self._focused_device_path: str = self._config.device_path or "auto"
+        self._focused_stable_id: str = ""
+        self._connected_devs_cache = []
         self._profile_store: ProfileStore = load_profile_store()
         self._last_state = ControllerState()
         self._syncing_widgets = False
@@ -680,6 +687,16 @@ class MainWindow(QMainWindow):
         self._sim_btn.setCheckable(True)
         self._sim_btn.toggled.connect(self._on_toggle_simulator)
         top_row.addWidget(self._sim_btn)
+
+        self._pad_switch_btn = QPushButton("Mandos ▾")
+        self._pad_switch_btn.setObjectName("MiniPill")
+        self._pad_switch_btn.setVisible(False)
+        self._pad_switch_btn.setToolTip(
+            "Cambiar qué mando conectado se muestra y calibra (el anti-drift protege todos a la vez)"
+        )
+        self._pad_switch_menu = QMenu(self._pad_switch_btn)
+        self._pad_switch_btn.setMenu(self._pad_switch_menu)
+        top_row.addWidget(self._pad_switch_btn)
         c_lay.addLayout(top_row)
 
         self._controller_widget = ControllerWidget()
@@ -696,6 +713,14 @@ class MainWindow(QMainWindow):
         legend.setAlignment(Qt.AlignCenter)
         legend.setObjectName("MutedNote")
         c_lay.addWidget(legend)
+
+        self._vname_pill_btn = QPushButton(f"En juegos: {DEFAULT_VIRTUAL_NAME} ✎")
+        self._vname_pill_btn.setObjectName("MiniPill")
+        self._vname_pill_btn.setToolTip(
+            "Haz clic para personalizar cómo aparece este mando en tus juegos"
+        )
+        self._vname_pill_btn.clicked.connect(self._on_quick_rename_virtual)
+        c_lay.addWidget(self._vname_pill_btn)
 
         self._active_buttons_label = QLabel(
             "Pulsa botones o mueve las palancas para comprobar tu mando."
@@ -1112,7 +1137,7 @@ class MainWindow(QMainWindow):
         d_lay.addWidget(d_title)
 
         pick_row = QHBoxLayout()
-        pick_row.addWidget(QLabel("Mando activo:"))
+        pick_row.addWidget(QLabel("Mando a configurar:"))
         self._device_combo = QComboBox()
         self._device_combo.setSizeAdjustPolicy(
             QComboBox.AdjustToMinimumContentsLengthWithIcon
@@ -1124,6 +1149,33 @@ class MainWindow(QMainWindow):
         btn_rescan.clicked.connect(self._refresh_device_selector)
         pick_row.addWidget(btn_rescan)
         d_lay.addLayout(pick_row)
+
+        vname_row = QHBoxLayout()
+        vname_row.addWidget(QLabel("Nombre del mando en juegos:"))
+        self._virtual_name_edit = QLineEdit()
+        self._virtual_name_edit.setMaxLength(79)
+        self._virtual_name_edit.setPlaceholderText(
+            f"Ej. Mando de Cesar (por defecto: {DEFAULT_VIRTUAL_NAME})"
+        )
+        self._virtual_name_edit.textChanged.connect(self._on_virtual_name_changed)
+        vname_row.addWidget(self._virtual_name_edit, 1)
+        btn_vname_def = QPushButton("Por defecto")
+        btn_vname_def.setObjectName("MiniPill")
+        btn_vname_def.setToolTip(f"Restaurar '{DEFAULT_VIRTUAL_NAME}'")
+        btn_vname_def.clicked.connect(
+            lambda: self._virtual_name_edit.setText(DEFAULT_VIRTUAL_NAME)
+        )
+        vname_row.addWidget(btn_vname_def)
+        d_lay.addLayout(vname_row)
+
+        self._multi_pad_chk = QCheckBox(
+            "Modo multi-mando: arreglar el drift de todos los mandos conectados a la vez"
+        )
+        self._multi_pad_chk.setToolTip(
+            "Protege simultáneamente varios mandos (hasta 8) con su propia calibración y nombre."
+        )
+        self._multi_pad_chk.toggled.connect(self._on_multi_pad_toggled)
+        d_lay.addWidget(self._multi_pad_chk)
 
         proc_row = QHBoxLayout()
         proc_row.addWidget(QLabel("Proceso del juego (perfil actual):"))
@@ -1453,22 +1505,107 @@ class MainWindow(QMainWindow):
             self._refresh_logs()
 
     def _refresh_device_selector(self) -> None:
+        devs = list_physical_controllers()
+        self._connected_devs_cache = devs
         self._device_combo.blockSignals(True)
         self._device_combo.clear()
-        self._device_combo.addItem("Automático (cualquier mando conectado)", "auto")
-        for dev in list_physical_controllers():
+        self._device_combo.addItem("Automático (mando principal / todos)", "auto")
+        for idx_d, dev in enumerate(devs, start=1):
             vid_txt = f" [{dev.vid_pid}]" if dev.vid_pid else ""
-            self._device_combo.addItem(f"{dev.name}{vid_txt}", dev.path)
+            prefix = f"Mando {idx_d}: " if len(devs) > 1 else ""
+            self._device_combo.addItem(f"{prefix}{dev.name}{vid_txt}", dev.path)
 
-        idx = self._device_combo.findData(self._config.device_path)
+        target_path = self._focused_device_path if self._config.multi_controller else self._config.device_path
+        idx = self._device_combo.findData(target_path)
         self._device_combo.setCurrentIndex(max(0, idx))
         self._device_combo.blockSignals(False)
+        self._rebuild_pad_switch_menu(devs)
+
+    def _rebuild_pad_switch_menu(self, devs: list | None = None) -> None:
+        if devs is None:
+            devs = self._connected_devs_cache or list_physical_controllers()
+        self._pad_switch_menu.clear()
+        if len(devs) <= 1:
+            self._pad_switch_btn.setVisible(False)
+            return
+
+        self._pad_switch_btn.setVisible(True)
+        cur_idx = 1
+        for i, dev in enumerate(devs, start=1):
+            if self._last_state.physical_path == dev.path or self._focused_device_path == dev.path:
+                cur_idx = i
+            act = self._pad_switch_menu.addAction(f"Mando {i}: {dev.name}")
+            act.setCheckable(True)
+            act.setChecked(
+                self._focused_device_path == dev.path
+                or (self._focused_device_path == "auto" and self._last_state.physical_path == dev.path)
+            )
+            act.triggered.connect(lambda _=False, p=dev.path: self._select_focused_device(p))
+        self._pad_switch_btn.setText(f"Mando {cur_idx}/{len(devs)} ▾")
+
+    def _select_focused_device(self, path: str) -> None:
+        clean_path = path or "auto"
+        self._focused_device_path = clean_path
+        if not self._config.multi_controller:
+            self._config.device_path = clean_path
+        if self._reader is not None:
+            self._reader.set_focused_device(clean_path)
+
+        matched_dev = next((d for d in self._connected_devs_cache if d.path == clean_path), None)
+        if matched_dev is None and clean_path == "auto" and self._connected_devs_cache:
+            matched_dev = self._connected_devs_cache[0]
+        self._focused_stable_id = matched_dev.stable_id if matched_dev else ""
+
+        if self._focused_stable_id:
+            dev_cfg = load_device_config(self._focused_stable_id, load_config())
+            dev_cfg.multi_controller = self._config.multi_controller
+            if not dev_cfg.multi_controller:
+                dev_cfg.device_path = clean_path
+            self._saved_config = dev_cfg.copy()
+            self._config = dev_cfg.copy()
+            self._apply_config_to_widgets(self._config)
+        elif not self._config.multi_controller:
+            self._sync_previews()
+
+        self._refresh_device_selector()
 
     def _on_device_selected(self, _idx: int) -> None:
         path = self._device_combo.currentData() or "auto"
-        if path != self._config.device_path:
-            self._config.device_path = path
-            self._sync_previews()
+        if path != self._focused_device_path or (not self._config.multi_controller and path != self._config.device_path):
+            self._select_focused_device(path)
+
+    def _on_virtual_name_changed(self, text: str) -> None:
+        if self._syncing_widgets:
+            return
+        self._config.virtual_name = sanitize_virtual_name(text) if text.strip() else DEFAULT_VIRTUAL_NAME
+        self._vname_pill_btn.setText(f"En juegos: {self._config.virtual_name} ✎")
+        self._sync_previews()
+
+    def _on_quick_rename_virtual(self) -> None:
+        new_name, ok = QInputDialog.getText(
+            self,
+            "Personalizar nombre del mando en juegos",
+            "¿Cómo quieres que aparezca este mando en Steam y tus juegos?\n"
+            f"(Deja vacío o usa '{DEFAULT_VIRTUAL_NAME}' por defecto)",
+            text=self._config.virtual_name,
+        )
+        if not ok:
+            return
+        sanitized = sanitize_virtual_name(new_name)
+        self._config.virtual_name = sanitized
+        self._virtual_name_edit.blockSignals(True)
+        self._virtual_name_edit.setText(sanitized)
+        self._virtual_name_edit.blockSignals(False)
+        self._vname_pill_btn.setText(f"En juegos: {sanitized} ✎")
+        self._on_save_and_apply()
+
+    def _on_multi_pad_toggled(self, checked: bool) -> None:
+        if self._syncing_widgets:
+            return
+        self._config.multi_controller = bool(checked)
+        if not checked and self._focused_device_path:
+            self._config.device_path = self._focused_device_path
+        self._sync_previews()
 
     def _apply_config_to_widgets(self, cfg: AntiDriftConfig) -> None:
         self._syncing_widgets = True
@@ -1497,6 +1634,9 @@ class MainWindow(QMainWindow):
             self._low_lat_chk.setChecked(cfg.low_latency)
             self._hair_trig_chk.setChecked(cfg.hair_trigger)
             self._swap_nintendo_chk.setChecked(cfg.swap_nintendo)
+            self._multi_pad_chk.setChecked(cfg.multi_controller)
+            self._virtual_name_edit.setText(cfg.virtual_name)
+            self._vname_pill_btn.setText(f"En juegos: {cfg.virtual_name} ✎")
             self._debounce_slider.setValue(max(0, min(45, cfg.debounce_ms)))
             self._debounce_label.setText(f"{cfg.debounce_ms} ms")
             self._rumble_slider.setValue(max(0, min(100, cfg.rumble_gain)))
@@ -1661,7 +1801,31 @@ class MainWindow(QMainWindow):
         self._btn_revert.setEnabled(dirty)
 
     def _on_save_and_apply(self) -> None:
-        save_config(self._config)
+        self._config.virtual_name = sanitize_virtual_name(self._virtual_name_edit.text())
+        self._virtual_name_edit.blockSignals(True)
+        self._virtual_name_edit.setText(self._config.virtual_name)
+        self._virtual_name_edit.blockSignals(False)
+        self._vname_pill_btn.setText(f"En juegos: {self._config.virtual_name} ✎")
+
+        stable_id = self._focused_stable_id or (self._last_state.physical_stable_id or "")
+        focused_label = self._last_state.physical_name or ""
+        is_specific_secondary = (
+            self._config.multi_controller
+            and self._focused_device_path != "auto"
+            and bool(self._connected_devs_cache)
+            and self._connected_devs_cache[0].path != self._focused_device_path
+        )
+
+        if stable_id:
+            save_device_config(stable_id, self._config, label=focused_label)
+        if is_specific_secondary:
+            # Keep primary global pad overrides intact; only sync multi_controller mode flag
+            base_cfg = load_config()
+            base_cfg.multi_controller = self._config.multi_controller
+            save_config(base_cfg)
+        else:
+            save_config(self._config)
+
         self._saved_config = self._config.copy()
         self._refresh_dirty_state()
 
@@ -1690,6 +1854,10 @@ class MainWindow(QMainWindow):
 
     def _on_reset_defaults(self) -> None:
         self._config = AntiDriftConfig()
+        self._focused_device_path = "auto"
+        self._focused_stable_id = ""
+        if self._reader is not None:
+            self._reader.set_focused_device("auto")
         self._apply_config_to_widgets(self._config)
         self._refresh_device_selector()
 
@@ -1763,17 +1931,43 @@ class MainWindow(QMainWindow):
             self._on_controller_state(self._last_state)
 
     def _on_controller_state(self, state: ControllerState) -> None:
+        prev_stable = self._last_state.physical_stable_id
+        prev_count = self._last_state.connected_count
         self._last_state = state
+
+        if state.physical_stable_id and state.physical_stable_id != prev_stable:
+            self._focused_stable_id = state.physical_stable_id
+            # Load per-controller saved calibration/virtual name when newly focused on startup
+            if self._config == self._saved_config:
+                dev_cfg = load_device_config(state.physical_stable_id, self._saved_config)
+                if dev_cfg != self._config:
+                    dev_cfg.multi_controller = self._config.multi_controller
+                    self._saved_config = dev_cfg.copy()
+                    self._config = dev_cfg.copy()
+                    self._apply_config_to_widgets(self._config)
+
+        if state.connected_count != prev_count or state.physical_stable_id != prev_stable:
+            self._connected_devs_cache = list_physical_controllers()
+            self._rebuild_pad_switch_menu(self._connected_devs_cache)
 
         if state.mode in ("virtual", "direct"):
             pad_name = state.physical_name or "Mando conectado"
-            if len(pad_name) > 26:
-                pad_name = pad_name[:23] + "..."
-            self._hw_pill.setText(f"Conectado: {pad_name}")
+            if len(pad_name) > 24:
+                pad_name = pad_name[:21] + "..."
+            self._hw_pill.setText(
+                f"Conectado ({state.connected_count} mandos): {pad_name}"
+                if state.connected_count > 1
+                else f"Conectado: {pad_name}"
+            )
+            vname_shown = state.virtual_name or self._config.virtual_name
+            self._hw_pill.setToolTip(f"Físico: {state.physical_name}\nEn juegos: {vname_shown}")
             self._hw_pill.setObjectName("PillOk")
             self._hz_badge.setText(f"{round(state.poll_hz)} Hz")
+            if state.virtual_name and self._config == self._saved_config:
+                self._vname_pill_btn.setText(f"En juegos: {state.virtual_name} ✎")
         else:
             self._hw_pill.setText("Sin mando conectado")
+            self._hw_pill.setToolTip("")
             self._hw_pill.setObjectName("PillOff")
             self._hz_badge.setText("0 Hz")
 
@@ -1885,8 +2079,21 @@ class MainWindow(QMainWindow):
         self._run_svc(action)
 
     def _on_fix_sdl_filter(self) -> None:
-        vid_pid = self._last_state.physical_vid_pid
-        ok, msg = ensure_sdl_ignore_device(vid_pid)
+        vid_pids = [
+            d.vid_pid for d in (self._connected_devs_cache or list_physical_controllers()) if d.vid_pid
+        ]
+        if not vid_pids and self._last_state.physical_vid_pid:
+            vid_pids = [self._last_state.physical_vid_pid]
+        if not vid_pids:
+            ok, msg = ensure_sdl_ignore_device(None)
+        else:
+            msgs: list[str] = []
+            ok = True
+            for vp in dict.fromkeys(vid_pids):
+                cur_ok, cur_msg = ensure_sdl_ignore_device(vp)
+                ok = ok and cur_ok
+                msgs.append(cur_msg)
+            msg = "\n".join(msgs)
         self._refresh_service_status()
         if ok:
             QMessageBox.information(self, "Filtro actualizado", msg)

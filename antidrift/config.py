@@ -11,9 +11,22 @@ AXIS_MAX = 32767
 TRIGGER_MAX = 1023
 
 DEFAULT_CONFIG_PATH = Path.home() / ".config" / "xbox-antidrift.conf"
+DEFAULT_DEVICES_CONFIG_PATH = Path.home() / ".config" / "xbox-antidrift-devices.conf"
 ENV_CONFIG_PATH = Path.home() / ".config" / "environment.d" / "xbox-antidrift.conf"
+DEFAULT_VIRTUAL_NAME = "Microsoft X-Box 360 pad"
 
 VALID_DZ_MODES = ("axial", "radial", "hybrid")
+
+
+def sanitize_virtual_name(name: str | None) -> str:
+    """Sanitize virtual uinput device name and fit within Linux 79-byte limit."""
+    cleaned = " ".join((name or "").replace("\n", " ").replace("\r", " ").split()).strip()
+    if not cleaned:
+        return DEFAULT_VIRTUAL_NAME
+    encoded = cleaned.encode("utf-8")
+    if len(encoded) <= 79:
+        return cleaned
+    return encoded[:79].decode("utf-8", errors="ignore").strip() or DEFAULT_VIRTUAL_NAME
 
 
 @dataclass
@@ -35,7 +48,9 @@ class AntiDriftConfig:
     debounce_ms: int = 0
     rumble_gain: int = 100
     swap_nintendo: bool = False
+    multi_controller: bool = True
     device_path: str = "auto"
+    virtual_name: str = DEFAULT_VIRTUAL_NAME
 
     def copy(self) -> AntiDriftConfig:
         """Return a shallow copy of the configuration."""
@@ -60,8 +75,59 @@ class AntiDriftConfig:
             debounce_ms=max(0, min(80, int(self.debounce_ms))),
             rumble_gain=max(0, min(100, int(self.rumble_gain))),
             swap_nintendo=bool(self.swap_nintendo),
+            multi_controller=bool(self.multi_controller),
             device_path=(self.device_path or "auto").strip(),
+            virtual_name=sanitize_virtual_name(self.virtual_name),
         )
+
+
+def _apply_kv_to_config(cfg: AntiDriftConfig, key: str, val_str: str) -> None:
+    if key == "device_path":
+        cfg.device_path = val_str or "auto"
+        return
+    if key == "virtual_name":
+        cfg.virtual_name = sanitize_virtual_name(val_str)
+        return
+    if key == "dz_mode":
+        if val_str in VALID_DZ_MODES:
+            cfg.dz_mode = val_str
+        elif val_str in ("0", "1", "2"):
+            cfg.dz_mode = VALID_DZ_MODES[int(val_str)]
+        return
+    try:
+        val = float(val_str)
+    except ValueError:
+        return
+    if key == "center_lx":
+        cfg.center_lx = int(val)
+    elif key == "center_ly":
+        cfg.center_ly = int(val)
+    elif key == "dz_l":
+        cfg.dz_l = val
+    elif key == "center_rx":
+        cfg.center_rx = int(val)
+    elif key == "center_ry":
+        cfg.center_ry = int(val)
+    elif key == "dz_r":
+        cfg.dz_r = val
+    elif key == "outer_comp_l":
+        cfg.outer_comp_l = val
+    elif key == "outer_comp_r":
+        cfg.outer_comp_r = val
+    elif key == "low_latency":
+        cfg.low_latency = bool(int(val))
+    elif key == "response_curve":
+        cfg.response_curve = val
+    elif key == "hair_trigger":
+        cfg.hair_trigger = bool(int(val))
+    elif key == "debounce_ms":
+        cfg.debounce_ms = int(val)
+    elif key == "rumble_gain":
+        cfg.rumble_gain = int(val)
+    elif key == "swap_nintendo":
+        cfg.swap_nintendo = bool(int(val))
+    elif key == "multi_controller":
+        cfg.multi_controller = bool(int(val))
 
 
 def load_config(path: Path = DEFAULT_CONFIG_PATH) -> AntiDriftConfig:
@@ -75,77 +141,115 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> AntiDriftConfig:
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, val_str = line.split("=", 1)
-        key = key.strip()
-        val_str = val_str.strip()
-        if key == "device_path":
-            cfg.device_path = val_str or "auto"
-            continue
-        if key == "dz_mode":
-            if val_str in VALID_DZ_MODES:
-                cfg.dz_mode = val_str
-            elif val_str in ("0", "1", "2"):
-                cfg.dz_mode = VALID_DZ_MODES[int(val_str)]
-            continue
-        try:
-            val = float(val_str)
-        except ValueError:
-            continue
-        if key == "center_lx":
-            cfg.center_lx = int(val)
-        elif key == "center_ly":
-            cfg.center_ly = int(val)
-        elif key == "dz_l":
-            cfg.dz_l = val
-        elif key == "center_rx":
-            cfg.center_rx = int(val)
-        elif key == "center_ry":
-            cfg.center_ry = int(val)
-        elif key == "dz_r":
-            cfg.dz_r = val
-        elif key == "outer_comp_l":
-            cfg.outer_comp_l = val
-        elif key == "outer_comp_r":
-            cfg.outer_comp_r = val
-        elif key == "low_latency":
-            cfg.low_latency = bool(int(val))
-        elif key == "response_curve":
-            cfg.response_curve = val
-        elif key == "hair_trigger":
-            cfg.hair_trigger = bool(int(val))
-        elif key == "debounce_ms":
-            cfg.debounce_ms = int(val)
-        elif key == "rumble_gain":
-            cfg.rumble_gain = int(val)
-        elif key == "swap_nintendo":
-            cfg.swap_nintendo = bool(int(val))
+        _apply_kv_to_config(cfg, key.strip(), val_str.strip())
     return cfg.clamped()
+
+
+def _format_config_lines(cfg: AntiDriftConfig, include_global_routing: bool = True) -> list[str]:
+    clean = cfg.clamped()
+    lines = [
+        f"center_lx = {clean.center_lx}",
+        f"center_ly = {clean.center_ly}",
+        f"dz_l = {clean.dz_l:.2f}",
+        f"center_rx = {clean.center_rx}",
+        f"center_ry = {clean.center_ry}",
+        f"dz_r = {clean.dz_r:.2f}",
+        f"dz_mode = {clean.dz_mode}",
+        f"outer_comp_l = {clean.outer_comp_l:.2f}",
+        f"outer_comp_r = {clean.outer_comp_r:.2f}",
+        f"low_latency = {1 if clean.low_latency else 0}",
+        f"response_curve = {clean.response_curve:.2f}",
+        f"hair_trigger = {1 if clean.hair_trigger else 0}",
+        f"debounce_ms = {clean.debounce_ms}",
+        f"rumble_gain = {clean.rumble_gain}",
+        f"swap_nintendo = {1 if clean.swap_nintendo else 0}",
+        f"virtual_name = {clean.virtual_name}",
+    ]
+    if include_global_routing:
+        lines.append(f"multi_controller = {1 if clean.multi_controller else 0}")
+        if clean.device_path and clean.device_path != "auto":
+            lines.append(f"device_path = {clean.device_path}")
+    return lines
 
 
 def save_config(cfg: AntiDriftConfig, path: Path = DEFAULT_CONFIG_PATH) -> None:
     """Persist configuration in the exact format parsed by xbox-antidrift.c."""
-    clean = cfg.clamped()
     path.parent.mkdir(parents=True, exist_ok=True)
-    content = (
-        "# Configuracion universal Anti-Drift Studio\n"
-        f"center_lx = {clean.center_lx}\n"
-        f"center_ly = {clean.center_ly}\n"
-        f"dz_l = {clean.dz_l:.2f}\n"
-        f"center_rx = {clean.center_rx}\n"
-        f"center_ry = {clean.center_ry}\n"
-        f"dz_r = {clean.dz_r:.2f}\n"
-        f"dz_mode = {clean.dz_mode}\n"
-        f"outer_comp_l = {clean.outer_comp_l:.2f}\n"
-        f"outer_comp_r = {clean.outer_comp_r:.2f}\n"
-        f"low_latency = {1 if clean.low_latency else 0}\n"
-        f"response_curve = {clean.response_curve:.2f}\n"
-        f"hair_trigger = {1 if clean.hair_trigger else 0}\n"
-        f"debounce_ms = {clean.debounce_ms}\n"
-        f"rumble_gain = {clean.rumble_gain}\n"
-        f"swap_nintendo = {1 if clean.swap_nintendo else 0}\n"
-    )
-    if clean.device_path and clean.device_path != "auto":
-        content += f"device_path = {clean.device_path}\n"
+    header = "# Configuracion universal Anti-Drift Studio\n"
+    content = header + "\n".join(_format_config_lines(cfg, include_global_routing=True)) + "\n"
     path.write_text(content, encoding="utf-8")
+
+
+def _parse_device_sections(
+    path: Path = DEFAULT_DEVICES_CONFIG_PATH,
+) -> dict[str, dict[str, str]]:
+    sections: dict[str, dict[str, str]] = {}
+    if not path.exists():
+        return sections
+    cur_id: str | None = None
+    for raw_line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("[device ") and line.endswith("]"):
+            cur_id = line[8:-1].strip()
+            if cur_id:
+                sections.setdefault(cur_id, {})
+            else:
+                cur_id = None
+            continue
+        if cur_id and "=" in line:
+            k, v = line.split("=", 1)
+            sections[cur_id][k.strip()] = v.strip()
+    return sections
+
+
+def load_device_config(
+    stable_id: str | None,
+    base_cfg: AntiDriftConfig | None = None,
+    path: Path = DEFAULT_DEVICES_CONFIG_PATH,
+) -> AntiDriftConfig:
+    """Load effective AntiDriftConfig for a specific controller ID (base + override)."""
+    base = (base_cfg or load_config()).copy()
+    if not stable_id:
+        return base.clamped()
+    sections = _parse_device_sections(path)
+    sec = sections.get(stable_id)
+    if not sec:
+        return base.clamped()
+    for k, v in sec.items():
+        if k == "label":
+            continue
+        _apply_kv_to_config(base, k, v)
+    return base.clamped()
+
+
+def save_device_config(
+    stable_id: str,
+    cfg: AntiDriftConfig,
+    label: str = "",
+    path: Path = DEFAULT_DEVICES_CONFIG_PATH,
+) -> None:
+    """Save per-controller drift calibration & custom virtual name override."""
+    if not stable_id:
+        return
+    sections = _parse_device_sections(path)
+    new_sec: dict[str, str] = {}
+    if label.strip():
+        new_sec["label"] = label.strip()
+    for line in _format_config_lines(cfg, include_global_routing=False):
+        k, v = line.split("=", 1)
+        new_sec[k.strip()] = v.strip()
+    sections[stable_id] = new_sec
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    out_lines = ["# Configuracion por mando Anti-Drift Studio", ""]
+    for dev_id, kv in sections.items():
+        out_lines.append(f"[device {dev_id}]")
+        for k, v in kv.items():
+            out_lines.append(f"{k} = {v}")
+        out_lines.append("")
+    path.write_text("\n".join(out_lines), encoding="utf-8")
 
 
 def normalize_axis(raw: int, center: int) -> float:

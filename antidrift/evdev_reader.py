@@ -100,6 +100,7 @@ class ControllerDeviceInfo:
     name: str
     vid_pid: str | None
     score: int
+    stable_id: str = ""
 
 
 @dataclass
@@ -132,8 +133,10 @@ class DetectedDevices:
     physical_path: str | None = None
     physical_name: str | None = None
     physical_vid_pid: str | None = None
+    physical_stable_id: str | None = None
     virtual_path: str | None = None
     virtual_name: str | None = None
+    connected_count: int = 0
 
 
 def detect_controller_family(
@@ -176,8 +179,10 @@ class ControllerState:
     physical_path: str | None = None
     physical_name: str | None = None
     physical_vid_pid: str | None = None
+    physical_stable_id: str | None = None
     virtual_path: str | None = None
     virtual_name: str | None = None
+    connected_count: int = 0
     error_message: str | None = None
 
     raw_lx: int = 0
@@ -212,7 +217,8 @@ def _parse_uevent(path: Path) -> dict[str, str]:
     for line in _read_sys_text(path).splitlines():
         if "=" in line:
             k, v = line.split("=", 1)
-            info[k.strip()] = v.strip()
+            cleaned = v.strip().strip('"').strip("'")
+            info[k.strip()] = cleaned
     return info
 
 
@@ -237,13 +243,35 @@ def _safe_close(fd: int | None) -> None:
 
 
 def _is_virtual_sys_device(ev_dir: Path, name: str, phys: str) -> bool:
-    uevent = _parse_uevent(ev_dir / "device" / "uevent")
+    dev_dir = ev_dir / "device"
+    try:
+        if "/virtual/" in os.path.realpath(dev_dir):
+            return True
+    except OSError:
+        pass
+    uevent = _parse_uevent(dev_dir / "uevent")
     devpath = uevent.get("DEVPATH", "")
+    phys_val = (phys or _read_sys_text(dev_dir / "phys") or uevent.get("PHYS", "")).strip('"')
     if "/virtual/" in devpath:
         return True
-    if name == "Microsoft X-Box 360 pad" and not phys:
+    if phys_val.startswith("antidrift:"):
+        return True
+    if name == "Microsoft X-Box 360 pad" and not phys_val:
         return True
     return False
+
+
+def compute_device_stable_id(ev_sys: Path, vid_pid: str | None) -> str:
+    """Build deterministic hardware ID matching daemon's compute_device_stable_id()."""
+    dev_dir = ev_sys / "device"
+    vp = vid_pid or "0000:0000"
+    uniq = _read_sys_text(dev_dir / "uniq")
+    if uniq:
+        return f"{vp}|uniq:{uniq}"
+    phys = _read_sys_text(dev_dir / "phys")
+    if phys:
+        return f"{vp}|{phys}"
+    return f"{vp}|node:{ev_sys.name}"
 
 
 def _score_gamepad(ev_sys: Path) -> ControllerDeviceInfo | None:
@@ -306,8 +334,9 @@ def _score_gamepad(ev_sys: Path) -> ControllerDeviceInfo | None:
     vid = _read_sys_text(dev_dir / "id" / "vendor").lower()
     pid = _read_sys_text(dev_dir / "id" / "product").lower()
     vid_pid = f"{vid}:{pid}" if vid and pid else None
+    stable_id = compute_device_stable_id(ev_sys, vid_pid)
     return ControllerDeviceInfo(
-        path=dev_node, name=name, vid_pid=vid_pid, score=score
+        path=dev_node, name=name, vid_pid=vid_pid, score=score, stable_id=stable_id
     )
 
 
@@ -322,10 +351,34 @@ def list_physical_controllers() -> list[ControllerDeviceInfo]:
     return items
 
 
+def list_virtual_controllers() -> list[tuple[str, str, str]]:
+    """Return list of (event_path, dev_name, phys_tag) for active Anti-Drift virtual pads."""
+    out: list[tuple[str, str, str]] = []
+    for ev_sys in sorted(Path("/sys/class/input").glob("event*")):
+        dev_dir = ev_sys / "device"
+        name = _read_sys_text(dev_dir / "name")
+        vid = _read_sys_text(dev_dir / "id" / "vendor").lower()
+        pid = _read_sys_text(dev_dir / "id" / "product").lower()
+        uevent = _parse_uevent(dev_dir / "uevent")
+        phys = _read_sys_text(dev_dir / "phys") or uevent.get("PHYS", "")
+        try:
+            real_dev = os.path.realpath(dev_dir)
+        except OSError:
+            real_dev = ""
+        is_virt_node = "/virtual/" in real_dev or "/virtual/" in uevent.get("DEVPATH", "")
+        is_our_virt = phys.startswith("antidrift:") or (
+            vid == "045e" and pid == "028e" and is_virt_node
+        )
+        if is_our_virt and name:
+            out.append((f"/dev/input/{ev_sys.name}", name, phys))
+    return out
+
+
 def discover_devices(preferred_device: str = "auto") -> DetectedDevices:
-    """Locate physical gamepad (any brand) and virtual Xbox 360 uinput device."""
+    """Locate physical gamepad (any brand) and its paired virtual uinput pad."""
     result = DetectedDevices()
     controllers = list_physical_controllers()
+    result.connected_count = len(controllers)
 
     if preferred_device and preferred_device != "auto":
         resolved = os.path.realpath(preferred_device)
@@ -334,6 +387,7 @@ def discover_devices(preferred_device: str = "auto") -> DetectedDevices:
                 result.physical_path = c.path
                 result.physical_name = c.name
                 result.physical_vid_pid = c.vid_pid
+                result.physical_stable_id = c.stable_id
                 break
 
     if result.physical_path is None and controllers:
@@ -341,23 +395,21 @@ def discover_devices(preferred_device: str = "auto") -> DetectedDevices:
         result.physical_path = best.path
         result.physical_name = best.name
         result.physical_vid_pid = best.vid_pid
+        result.physical_stable_id = best.stable_id
 
-    for ev_sys in sorted(Path("/sys/class/input").glob("event*")):
-        dev_dir = ev_sys / "device"
-        name = _read_sys_text(dev_dir / "name")
-        vid = _read_sys_text(dev_dir / "id" / "vendor").lower()
-        pid = _read_sys_text(dev_dir / "id" / "product").lower()
-        uevent = _parse_uevent(dev_dir / "uevent")
-        phys = uevent.get("PHYS", "")
-        if (
-            name == "Microsoft X-Box 360 pad"
-            and vid == "045e"
-            and pid == "028e"
-            and not phys
-        ):
-            result.virtual_path = f"/dev/input/{ev_sys.name}"
-            result.virtual_name = name
-            break
+    virts = list_virtual_controllers()
+    if result.physical_path is not None:
+        phys_ev = os.path.basename(result.physical_path)
+        expected_tag = f"antidrift:{phys_ev}"
+        for vpath, vname, vphys in virts:
+            if vphys == expected_tag:
+                result.virtual_path = vpath
+                result.virtual_name = vname
+                break
+
+    if result.virtual_path is None and virts:
+        # Legacy single-pad fallback when PHYS tag isn't present
+        result.virtual_path, result.virtual_name, _ = virts[0]
 
     return result
 
@@ -488,6 +540,7 @@ class ControllerReaderThread(QThread):
         super().__init__(parent)
         self._lock = threading.Lock()
         self._config = config.copy()
+        self._focused_device = config.device_path or "auto"
         self._stop_requested = False
 
         self._calibrating = False
@@ -499,6 +552,11 @@ class ControllerReaderThread(QThread):
         """Update config used for live direct-mode preview calculations."""
         with self._lock:
             self._config = config.copy()
+
+    def set_focused_device(self, device_path: str) -> None:
+        """Switch which physical/virtual controller pair the live GUI monitors."""
+        with self._lock:
+            self._focused_device = (device_path or "auto").strip()
 
     def start_calibration(self, duration_sec: float = 1.5) -> None:
         """Begin collecting raw rest samples for automatic center calibration."""
@@ -694,11 +752,15 @@ class ControllerReaderThread(QThread):
                 ):
                     last_discover = now
                     with self._lock:
-                        pref_dev = self._config.device_path
+                        pref_dev = self._focused_device or self._config.device_path
                     new_devices = discover_devices(pref_dev)
                     target_stream = new_devices.virtual_path or new_devices.physical_path
                     target_is_virtual = new_devices.virtual_path is not None
                     target_raw = new_devices.physical_path
+
+                    state.connected_count = new_devices.connected_count
+                    if new_devices.virtual_name:
+                        state.virtual_name = new_devices.virtual_name
 
                     if target_stream != stream_path or target_raw != raw_path:
                         if raw_fd is not None and raw_fd != stream_fd:
@@ -720,8 +782,10 @@ class ControllerReaderThread(QThread):
                             physical_path=devices.physical_path,
                             physical_name=devices.physical_name,
                             physical_vid_pid=devices.physical_vid_pid,
+                            physical_stable_id=devices.physical_stable_id,
                             virtual_path=devices.virtual_path,
                             virtual_name=devices.virtual_name,
+                            connected_count=devices.connected_count,
                         )
 
                         if raw_path is not None:
@@ -987,8 +1051,10 @@ class ControllerReaderThread(QThread):
                         physical_path=state.physical_path,
                         physical_name=state.physical_name,
                         physical_vid_pid=state.physical_vid_pid,
+                        physical_stable_id=state.physical_stable_id,
                         virtual_path=state.virtual_path,
                         virtual_name=state.virtual_name,
+                        connected_count=state.connected_count,
                         error_message=state.error_message,
                         raw_lx=state.raw_lx,
                         raw_ly=state.raw_ly,

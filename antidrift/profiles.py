@@ -73,7 +73,9 @@ class GameProfile:
             debounce_ms=self.debounce_ms,
             rumble_gain=self.rumble_gain,
             swap_nintendo=self.swap_nintendo,
+            multi_controller=base.multi_controller,
             device_path=base.device_path,
+            virtual_name=base.virtual_name,
         ).clamped()
 
 
