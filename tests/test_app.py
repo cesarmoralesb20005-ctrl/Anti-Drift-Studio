@@ -546,19 +546,36 @@ class ClipsSubsystemTests(unittest.TestCase):
             )
             cfg = ClipsConfig(replay_seconds=30, record_desktop_audio=True, record_mic_audio=True)
             self.assertEqual(resolve_capture_target(cfg, user_fp), "portal")
-            prog, args = build_gsr_args(
-                cfg,
+            prog, args = build_gsr_args(cfg, user_fp)
+            self.assertEqual(prog, "flatpak")
+            self.assertIn("-restore-portal-session", args)
+            # Clean default avoids multi-monitor DSP echo by using default_output
+            self.assertIn("default_output|default_input", args)
+
+            # Explicit all_outputs mode combines physical hardware monitors cleanly
+            cfg_all = ClipsConfig(
+                replay_seconds=30,
+                record_desktop_audio=True,
+                desktop_audio_source="all_outputs",
+                record_mic_audio=True,
+            )
+            _, args_all = build_gsr_args(
+                cfg_all,
                 user_fp,
                 desktop_monitors=["sink1.monitor", "sink2.monitor"],
             )
-            self.assertEqual(prog, "flatpak")
-            self.assertIn("-restore-portal-session", args)
             self.assertIn(
                 "device:sink1.monitor|device:sink2.monitor|default_input",
-                args,
+                args_all,
             )
-            _, fallback_args = build_gsr_args(cfg, user_fp, desktop_monitors=[])
+            _, fallback_args = build_gsr_args(cfg_all, user_fp, desktop_monitors=[])
             self.assertIn("default_output|default_input", fallback_args)
+
+            from antidrift.clips.recorder import is_virtual_audio_monitor
+
+            self.assertTrue(is_virtual_audio_monitor("easyeffects_sink.monitor"))
+            self.assertTrue(is_virtual_audio_monitor("combine_sink.monitor"))
+            self.assertFalse(is_virtual_audio_monitor("alsa_output.pci-0000_07_00.6.analog-stereo.monitor"))
 
             native = GsrBackend(
                 kind="native",

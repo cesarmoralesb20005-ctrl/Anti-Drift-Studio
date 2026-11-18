@@ -44,7 +44,7 @@ class ClipsConfig:
     codec: str = "h264"  # h264 | hevc | av1
     capture_target: str = "auto"  # auto | portal | screen | monitor_name
     record_desktop_audio: bool = True
-    desktop_audio_source: str = "all_outputs"
+    desktop_audio_source: str = "default_output"
     record_mic_audio: bool = False
     mic_audio_source: str = "default_input"
     output_dir: str = str(DEFAULT_CLIPS_DIR)
@@ -76,7 +76,7 @@ class ClipsConfig:
             codec=c,
             capture_target=(self.capture_target or "auto").strip(),
             record_desktop_audio=bool(self.record_desktop_audio),
-            desktop_audio_source=(self.desktop_audio_source or "all_outputs").strip(),
+            desktop_audio_source=(self.desktop_audio_source or "default_output").strip(),
             record_mic_audio=bool(self.record_mic_audio),
             mic_audio_source=(self.mic_audio_source or "default_input").strip(),
             output_dir=(self.output_dir or str(DEFAULT_CLIPS_DIR)).strip(),
@@ -104,7 +104,7 @@ def load_clips_config(path: Path = DEFAULT_CLIPS_CONFIG_PATH) -> ClipsConfig:
             codec=str(data.get("codec", "h264")),
             capture_target=str(data.get("capture_target", "auto")),
             record_desktop_audio=bool(data.get("record_desktop_audio", True)),
-            desktop_audio_source=str(data.get("desktop_audio_source", "all_outputs")),
+            desktop_audio_source=str(data.get("desktop_audio_source", "default_output")),
             record_mic_audio=bool(data.get("record_mic_audio", False)),
             mic_audio_source=str(data.get("mic_audio_source", "default_input")),
             output_dir=str(data.get("output_dir", str(DEFAULT_CLIPS_DIR))),

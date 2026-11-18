@@ -233,9 +233,36 @@ def has_saved_portal_session() -> bool:
         return False
 
 
+_VIRTUAL_AUDIO_MONITOR_HINTS = (
+    "easyeffects",
+    "pulseeffects",
+    "jamesdsp",
+    "echo-cancel",
+    "echo_cancel",
+    "combine",
+    "loopback",
+    "virtual",
+    "null",
+    "remap",
+    "ladspa",
+    "rnnoise",
+    "deepfilter",
+    "filter-chain",
+    "simultaneous",
+    "dummy",
+)
+
+
+def is_virtual_audio_monitor(source_name: str) -> bool:
+    """Return True if a .monitor source belongs to a virtual/DSP sink that causes echo."""
+    low = (source_name or "").strip().lower()
+    return any(hint in low for hint in _VIRTUAL_AUDIO_MONITOR_HINTS)
+
+
 def list_desktop_audio_monitors(backend: GsrBackend | None = None) -> list[str]:
-    """Return unique PipeWire/PulseAudio monitor sources for all output devices."""
-    monitors: list[str] = []
+    """Return non-virtual PipeWire/PulseAudio monitor sources (avoids DSP/loopback echo)."""
+    all_hw_monitors: list[str] = []
+    active_hw_monitors: list[str] = []
     if shutil.which("pactl"):
         try:
             res = subprocess.run(
@@ -250,10 +277,19 @@ def list_desktop_audio_monitors(backend: GsrBackend | None = None) -> list[str]:
                     cols = line.split("\t")
                     if len(cols) >= 2:
                         name = cols[1].strip()
-                        if name.endswith(".monitor") and name not in monitors:
-                            monitors.append(name)
-                if monitors:
-                    return monitors
+                        state = cols[-1].strip().upper() if len(cols) >= 5 else ""
+                        if (
+                            name.endswith(".monitor")
+                            and not is_virtual_audio_monitor(name)
+                            and name not in all_hw_monitors
+                        ):
+                            all_hw_monitors.append(name)
+                            if state == "RUNNING" and name not in active_hw_monitors:
+                                active_hw_monitors.append(name)
+                if active_hw_monitors:
+                    return active_hw_monitors
+                if all_hw_monitors:
+                    return all_hw_monitors
         except (OSError, subprocess.TimeoutExpired):
             pass
 
@@ -271,11 +307,15 @@ def list_desktop_audio_monitors(backend: GsrBackend | None = None) -> list[str]:
                     if "|" in line:
                         dev_id, _desc = line.split("|", 1)
                         dev_id = dev_id.strip()
-                        if dev_id.endswith(".monitor") and dev_id not in monitors:
-                            monitors.append(dev_id)
+                        if (
+                            dev_id.endswith(".monitor")
+                            and not is_virtual_audio_monitor(dev_id)
+                            and dev_id not in all_hw_monitors
+                        ):
+                            all_hw_monitors.append(dev_id)
         except (OSError, subprocess.TimeoutExpired):
             pass
-    return monitors
+    return all_hw_monitors
 
 
 def _format_audio_arg(source: str) -> str:
@@ -380,8 +420,8 @@ def list_monitors_and_audio(
             ("screen", "Primer monitor detectado (X11/KMS)"),
         ]
     audio_sources: list[tuple[str, str]] = [
-        ("all_outputs", "Todas las salidas del PC (recomendado)"),
-        ("default_output", "Salida predeterminada del sistema"),
+        ("default_output", "Salida predeterminada del PC (recomendado · sin eco)"),
+        ("all_outputs", "Todas las salidas físicas (solo si usas 2 DACs)"),
     ]
 
     mons = list_gsr_monitors(backend)
@@ -406,7 +446,10 @@ def list_monitors_and_audio(
                         continue
                     dev_id, desc = line.split("|", 1)
                     dev_id = dev_id.strip()
-                    if dev_id.endswith(".monitor"):
+                    if (
+                        dev_id.endswith(".monitor")
+                        and not is_virtual_audio_monitor(dev_id)
+                    ):
                         clean_desc = desc.strip().removeprefix("Monitor of ")
                         audio_sources.append((dev_id, clean_desc))
                 return targets, audio_sources

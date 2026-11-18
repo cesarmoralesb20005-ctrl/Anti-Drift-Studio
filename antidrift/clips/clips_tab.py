@@ -758,7 +758,7 @@ class ClipsTabWidget(QWidget):
         self._config.capture_target = str(self._target_combo.currentData() or "auto")
         self._config.record_desktop_audio = self._desk_audio_chk.isChecked()
         self._config.desktop_audio_source = str(
-            self._desk_audio_src_combo.currentData() or "all_outputs"
+            self._desk_audio_src_combo.currentData() or "default_output"
         )
         self._config.record_mic_audio = self._mic_audio_chk.isChecked()
         self._update_save_button_label()
