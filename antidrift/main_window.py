@@ -617,18 +617,12 @@ class MainWindow(QMainWindow):
 
         lay.addWidget(B7MarkWidget(34))
 
-        title_col = QVBoxLayout()
-        title_col.setSpacing(1)
         title = QLabel(
             "Anti-Drift Studio <span style='color:#059669;'>■</span>"
         )
         title.setTextFormat(Qt.RichText)
         title.setObjectName("Title")
-        sub = QLabel("B7 SOFTWARE  ·  CONTROLADOR, MACROS Y CLIPS INSTANTÁNEOS")
-        sub.setObjectName("BrandTag")
-        title_col.addWidget(title)
-        title_col.addWidget(sub)
-        lay.addLayout(title_col)
+        lay.addWidget(title)
         lay.addStretch(1)
 
         self._update_btn = QPushButton("↑ Actualizar disponible")
@@ -637,10 +631,6 @@ class MainWindow(QMainWindow):
         self._update_btn.setToolTip("Hay una actualización en GitHub. Haz clic para instalarla.")
         self._update_btn.clicked.connect(self._on_apply_update_clicked)
         lay.addWidget(self._update_btn)
-
-        self._hw_pill = QLabel("Buscando mando...")
-        self._hw_pill.setObjectName("PillOff")
-        lay.addWidget(self._hw_pill)
 
         self._protect_btn = QPushButton("Protección: ...")
         self._protect_btn.setObjectName("ProtectToggleOff")
@@ -711,6 +701,11 @@ class MainWindow(QMainWindow):
         self._pad_switch_btn.setMenu(self._pad_switch_menu)
         top_row.addWidget(self._pad_switch_btn)
         c_lay.addLayout(top_row)
+
+        self._hw_pill = QLabel("Buscando mando...")
+        self._hw_pill.setObjectName("PillOff")
+        self._hw_pill.setAlignment(Qt.AlignCenter)
+        c_lay.addWidget(self._hw_pill)
 
         self._controller_widget = ControllerWidget()
         self._controller_widget.simulated_state_changed.connect(
