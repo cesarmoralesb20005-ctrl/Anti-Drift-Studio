@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ctypes
+import fcntl
 import glob
 import os
 import select
@@ -40,6 +41,61 @@ EVDEV_MOD_MAP: dict[str, tuple[int, ...]] = {
     "SHIFT": (42, 54),
     "META": (125, 126),
 }
+
+_X11_SPECIAL_KEYSYMS: dict[str, str] = {
+    "ESC": "Escape",
+    "SPACE": "space",
+    "PGUP": "Prior",
+    "PGDOWN": "Next",
+    "INS": "Insert",
+    "DEL": "Delete",
+    "HOME": "Home",
+    "END": "End",
+    "UP": "Up",
+    "DOWN": "Down",
+    "LEFT": "Left",
+    "RIGHT": "Right",
+    "PAUSE": "Pause",
+}
+
+_X11_MOD_KEYSYMS: dict[str, tuple[str, ...]] = {
+    "CTRL": ("Control_L", "Control_R"),
+    "ALT": ("Alt_L", "Alt_R"),
+    "SHIFT": ("Shift_L", "Shift_R"),
+    "META": ("Super_L", "Super_R"),
+}
+
+
+def parse_combo_x11_names(seq: str) -> tuple[list[tuple[str, ...]], str | None]:
+    """Parse Qt shortcut string into X11 keysym names for modifiers and main key."""
+    mods: list[tuple[str, ...]] = []
+    main_sym: str | None = None
+    for part in seq.split("+"):
+        u = part.strip().upper()
+        if not u:
+            continue
+        if u in ("CTRL", "CONTROL"):
+            mods.append(_X11_MOD_KEYSYMS["CTRL"])
+        elif u == "ALT":
+            mods.append(_X11_MOD_KEYSYMS["ALT"])
+        elif u == "SHIFT":
+            mods.append(_X11_MOD_KEYSYMS["SHIFT"])
+        elif u in ("META", "SUPER", "WIN"):
+            mods.append(_X11_MOD_KEYSYMS["META"])
+        elif u in _X11_SPECIAL_KEYSYMS:
+            main_sym = _X11_SPECIAL_KEYSYMS[u]
+        elif u.startswith("F") and u[1:].isdigit():
+            main_sym = u
+        elif len(u) == 1 and u.isalnum():
+            main_sym = u.lower()
+    return mods, main_sym
+
+
+def _x11_keycode_pressed(keymap_bytes: bytes, keycode: int) -> bool:
+    """Check whether X11 keycode bit is set in 32-byte XQueryKeymap bitmask."""
+    if keycode <= 0 or keycode >= 256 or len(keymap_bytes) < 32:
+        return False
+    return bool(keymap_bytes[keycode >> 3] & (1 << (keycode & 7)))
 
 
 def qt_seq_to_xdg_trigger(seq: str) -> str:
@@ -117,6 +173,34 @@ class GlobalHotkeyThread(QThread):
             real = os.path.realpath(link)
             if os.access(real, os.R_OK):
                 nodes.add(real)
+
+        # Also check all /sys/class/input/event* for BT/2.4GHz/PS2 keyboards
+        eviocgbit_key = 0x80604521  # EVIOCGBIT(EV_KEY, 96)
+        for ev_sys in sorted(Path("/sys/class/input").glob("event*")):
+            node = f"/dev/input/{ev_sys.name}"
+            if node in nodes or not os.access(node, os.R_OK):
+                continue
+            try:
+                fd = os.open(node, os.O_RDONLY | os.O_NONBLOCK)
+            except OSError:
+                continue
+            try:
+                bits = bytearray(96)
+                fcntl.ioctl(fd, eviocgbit_key, bits)
+                has_wasd = all(
+                    bool(bits[c >> 3] & (1 << (c & 7)))
+                    for c in (17, 30, 31, 32, 57)  # W, A, S, D, SPACE
+                )
+                has_south = bool(bits[304 >> 3] & (1 << (304 & 7)))
+                if has_wasd and not has_south:
+                    nodes.add(node)
+            except OSError:
+                pass
+            finally:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
         return sorted(nodes)
 
     def _run_ipc_server(self) -> None:
@@ -398,15 +482,17 @@ class GlobalHotkeyThread(QThread):
             self._run_evdev_loop(kbd_paths)
             return
 
-        if os.environ.get("XDG_SESSION_TYPE", "").lower() == "x11":
-            if self._try_x11_grab():
-                return
+        session = os.environ.get("XDG_SESSION_TYPE", "").strip().lower()
+        is_x11 = session == "x11" or (not session and not os.environ.get("WAYLAND_DISPLAY"))
+        if is_x11 and self._run_x11_loop():
+            return
 
         self._run_portal_loop()
         while not self._stop_requested:
             time.sleep(0.25)
 
-    def _try_x11_grab(self) -> bool:
+    def _run_x11_loop(self) -> bool:
+        """Poll X11 global keymap via libX11 XQueryKeymap (works inside fullscreen X11 games)."""
         try:
             x11 = ctypes.CDLL("libX11.so.6")
         except OSError:
@@ -414,10 +500,77 @@ class GlobalHotkeyThread(QThread):
         display_name = os.environ.get("DISPLAY")
         if not display_name:
             return False
+
+        x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
         x11.XOpenDisplay.restype = ctypes.c_void_p
-        dpy = x11.XOpenDisplay(display_name.encode())
+        x11.XCloseDisplay.argtypes = [ctypes.c_void_p]
+        x11.XStringToKeysym.argtypes = [ctypes.c_char_p]
+        x11.XStringToKeysym.restype = ctypes.c_ulong
+        x11.XKeysymToKeycode.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+        x11.XKeysymToKeycode.restype = ctypes.c_ubyte
+        x11.XQueryKeymap.argtypes = [ctypes.c_void_p, ctypes.c_char * 32]
+        x11.XQueryKeymap.restype = ctypes.c_int
+
+        dpy = x11.XOpenDisplay(display_name.encode("utf-8", errors="ignore"))
         if not dpy:
             return False
-        self.backend_status.emit("Atajo X11/IPC activo (usa ~/.local/bin/antidrift-save-clip o Portal)")
-        x11.XCloseDisplay(ctypes.c_void_p(dpy))
-        return False
+
+        def _resolve(combo_str: str) -> tuple[list[tuple[int, ...]], int]:
+            mod_names, main_name = parse_combo_x11_names(combo_str)
+            mod_kcs: list[tuple[int, ...]] = []
+            for grp in mod_names:
+                kcs = tuple(
+                    int(x11.XKeysymToKeycode(dpy, x11.XStringToKeysym(sym.encode())))
+                    for sym in grp
+                )
+                kcs = tuple(kc for kc in kcs if kc > 0)
+                if kcs:
+                    mod_kcs.append(kcs)
+            main_kc = (
+                int(x11.XKeysymToKeycode(dpy, x11.XStringToKeysym(main_name.encode())))
+                if main_name
+                else 0
+            )
+            return mod_kcs, main_kc
+
+        keymap_buf = (ctypes.c_char * 32)()
+        last_combo = ""
+        mod_codes: list[tuple[int, ...]] = []
+        main_code = 0
+        was_main_down = False
+        last_fire = 0.0
+
+        with self._lock:
+            init_combo = self._combo
+        self.backend_status.emit(
+            f"Atajo global X11 activo ({init_combo} · funciona dentro de juegos)"
+        )
+
+        try:
+            while not self._stop_requested:
+                with self._lock:
+                    combo = self._combo
+                if combo != last_combo:
+                    last_combo = combo
+                    mod_codes, main_code = _resolve(combo)
+                    was_main_down = False
+
+                if main_code > 0:
+                    x11.XQueryKeymap(dpy, keymap_buf)
+                    raw_bytes = bytes(keymap_buf)
+                    is_down = _x11_keycode_pressed(raw_bytes, main_code)
+                    if is_down and not was_main_down:
+                        mods_ok = all(
+                            any(_x11_keycode_pressed(raw_bytes, mkc) for mkc in grp)
+                            for grp in mod_codes
+                        )
+                        now = time.monotonic()
+                        if mods_ok and (now - last_fire >= 1.2):
+                            last_fire = now
+                            self.hotkey_triggered.emit(f"Teclado X11 ({combo})", 0)
+                    was_main_down = is_down
+
+                time.sleep(0.025)
+        finally:
+            x11.XCloseDisplay(ctypes.c_void_p(dpy))
+        return True

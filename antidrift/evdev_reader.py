@@ -153,6 +153,13 @@ def detect_controller_family(
         k in low for k in ("pro controller", "nintendo", "switch", "joy con")
     ):
         return "nintendo_pro"
+
+    # Match explicit Xbox names & Xbox vendor IDs BEFORE generic "wireless controller"
+    if vid in ("045e", "0e6f", "24c6", "20d6") or any(
+        k in low for k in ("xbox", "x-box", "xinput")
+    ):
+        return "xbox"
+
     if vid == "054c" or any(
         k in low
         for k in (
@@ -160,13 +167,13 @@ def detect_controller_family(
             "dualshock",
             "playstation",
             "sony interactive",
-            "wireless controller",
             "ps5",
             "ps4",
             "ps3",
         )
-    ):
+    ) or (low.strip() == "wireless controller" and vid in ("", "054c")):
         return "playstation"
+
     return "xbox"
 
 

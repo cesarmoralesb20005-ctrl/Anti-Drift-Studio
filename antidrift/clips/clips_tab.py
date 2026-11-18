@@ -912,11 +912,23 @@ class ClipsTabWidget(QWidget):
         self._config.hotkey_combo = txt
         save_clips_config(self._config)
         self._local_shortcut.setKey(QKeySequence(txt))
-        self._hk_status_lbl.setText(f"Tecla guardada: {txt} (pulsa 'Registrar global' para usarla en juegos)")
+        if not is_wayland_session():
+            self._hk_status_lbl.setText(
+                f"Atajo global X11 activo ({txt} · funciona dentro de juegos)"
+            )
+        else:
+            self._hk_status_lbl.setText(
+                f"Tecla guardada: {txt} (pulsa 'Registrar global' para usarla en juegos)"
+            )
         if self._hotkey_thread is not None:
             self._hotkey_thread.set_combo(txt)
 
     def _on_bind_portal_shortcut(self) -> None:
+        if not is_wayland_session():
+            self._hk_status_lbl.setText(
+                f"En X11 el atajo global ({self._config.hotkey_combo}) ya funciona automáticamente dentro de juegos."
+            )
+            return
         if self._hotkey_thread is not None:
             self._hotkey_thread.request_portal_bind()
             self._hk_status_lbl.setText(

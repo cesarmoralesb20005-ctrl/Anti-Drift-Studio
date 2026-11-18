@@ -655,6 +655,16 @@ class ClipsSubsystemTests(unittest.TestCase):
         self.assertEqual(len(mods), 2)
         self.assertEqual(main_k, 46)
 
+        from antidrift.clips.hotkey_listener import _x11_keycode_pressed, parse_combo_x11_names
+
+        x_mods, x_main = parse_combo_x11_names("Alt+Shift+C")
+        self.assertEqual(len(x_mods), 2)
+        self.assertEqual(x_main, "c")
+        kbuf = bytearray(32)
+        kbuf[54 >> 3] |= 1 << (54 & 7)
+        self.assertTrue(_x11_keycode_pressed(bytes(kbuf), 54))
+        self.assertFalse(_x11_keycode_pressed(bytes(kbuf), 55))
+
     def test_distro_deps_detection(self) -> None:
         from antidrift.deps import DistroInfo, build_distro_install_command, check_dependencies, detect_distro
 
@@ -695,6 +705,22 @@ class ClipsSubsystemTests(unittest.TestCase):
         self.assertEqual(
             detect_controller_family("Microsoft X-Box One pad", "045e:02d1"),
             "xbox",
+        )
+        self.assertEqual(
+            detect_controller_family("Xbox Wireless Controller", "045e:0b13"),
+            "xbox",
+        )
+        self.assertEqual(
+            detect_controller_family("Xbox Wireless Controller", None),
+            "xbox",
+        )
+        self.assertEqual(
+            detect_controller_family("PowerA Wireless Controller", "20d6:2002"),
+            "xbox",
+        )
+        self.assertEqual(
+            detect_controller_family("Wireless Controller", "054c:0ce6"),
+            "playstation",
         )
         self.assertEqual(
             detect_controller_family("DualSense Wireless Controller", "054c:0ce6"),
