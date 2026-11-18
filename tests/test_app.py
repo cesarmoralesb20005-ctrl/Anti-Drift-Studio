@@ -655,7 +655,12 @@ class ClipsSubsystemTests(unittest.TestCase):
         self.assertEqual(len(mods), 2)
         self.assertEqual(main_k, 46)
 
-        from antidrift.clips.hotkey_listener import _x11_keycode_pressed, parse_combo_x11_names
+        from PySide6.QtGui import QKeySequence
+        from antidrift.clips.hotkey_listener import (
+            _x11_keycode_pressed,
+            parse_combo_x11_names,
+            qt_seq_to_combined_int,
+        )
 
         x_mods, x_main = parse_combo_x11_names("Alt+Shift+C")
         self.assertEqual(len(x_mods), 2)
@@ -664,6 +669,12 @@ class ClipsSubsystemTests(unittest.TestCase):
         kbuf[54 >> 3] |= 1 << (54 & 7)
         self.assertTrue(_x11_keycode_pressed(bytes(kbuf), 54))
         self.assertFalse(_x11_keycode_pressed(bytes(kbuf), 55))
+
+        for combo_str in ("Alt+Shift+C", "Ctrl+Shift+F9", "Meta+Alt+Space", "Esc", "Pause"):
+            self.assertEqual(
+                qt_seq_to_combined_int(combo_str),
+                QKeySequence(combo_str)[0].toCombined(),
+            )
 
     def test_distro_deps_detection(self) -> None:
         from antidrift.deps import DistroInfo, build_distro_install_command, check_dependencies, detect_distro

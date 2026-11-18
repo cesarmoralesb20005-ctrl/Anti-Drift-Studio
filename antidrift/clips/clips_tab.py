@@ -912,14 +912,9 @@ class ClipsTabWidget(QWidget):
         self._config.hotkey_combo = txt
         save_clips_config(self._config)
         self._local_shortcut.setKey(QKeySequence(txt))
-        if not is_wayland_session():
-            self._hk_status_lbl.setText(
-                f"Atajo global X11 activo ({txt} · funciona dentro de juegos)"
-            )
-        else:
-            self._hk_status_lbl.setText(
-                f"Tecla guardada: {txt} (pulsa 'Registrar global' para usarla en juegos)"
-            )
+        self._hk_status_lbl.setText(
+            f"Atajo global actualizado: {txt} (funciona dentro de juegos)"
+        )
         if self._hotkey_thread is not None:
             self._hotkey_thread.set_combo(txt)
 
@@ -932,7 +927,7 @@ class ClipsTabWidget(QWidget):
         if self._hotkey_thread is not None:
             self._hotkey_thread.request_portal_bind()
             self._hk_status_lbl.setText(
-                "Si aparece el aviso del sistema (KDE/Wayland), acéptalo para activar el atajo."
+                f"Sincronizando atajo global ({self._config.hotkey_combo}) con el sistema..."
             )
 
     def _on_pad_shortcut_changed(self) -> None:
