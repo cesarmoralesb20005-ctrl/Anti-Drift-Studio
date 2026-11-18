@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -13,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QProcess, QTimer, Signal
+from PySide6.QtGui import QGuiApplication
 
 from .clips_config import ClipsConfig
 
@@ -104,12 +106,121 @@ def install_gsr_flatpak_user() -> tuple[bool, str]:
     return False, proc.stderr.strip() or proc.stdout.strip() or "Error al instalar Flatpak."
 
 
-def resolve_capture_target(cfg: ClipsConfig, backend: GsrBackend) -> str:
+def is_wayland_session() -> bool:
+    """Return True if the active graphical session uses Wayland."""
+    session = os.environ.get("XDG_SESSION_TYPE", "").strip().lower()
+    if session == "wayland":
+        return True
+    if session == "x11":
+        return False
+    return bool(os.environ.get("WAYLAND_DISPLAY"))
+
+
+def _normalize_connector_name(name: str | None) -> str:
+    low = (name or "").strip().lower()
+    low = low.replace("displayport", "dp")
+    low = re.sub(r"^hdmi-a-(\d+)$", r"hdmi\1", low)
+    return re.sub(r"[^a-z0-9]", "", low)
+
+
+def get_primary_x11_hint() -> tuple[str | None, str | None]:
+    """Return (primary_monitor_name, primary_WxH) on X11 via xrandr or Qt."""
+    if shutil.which("xrandr"):
+        try:
+            res = subprocess.run(
+                ["xrandr", "--query"],
+                capture_output=True,
+                text=True,
+                timeout=1.5,
+                check=False,
+            )
+            if res.returncode == 0:
+                for line in res.stdout.splitlines():
+                    if " connected primary " in line:
+                        parts = line.split()
+                        mon_name = parts[0] if parts else None
+                        m_res = re.search(r"(\d+x\d+)\+\d+\+\d+", line)
+                        return mon_name, (m_res.group(1) if m_res else None)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
+    app = QGuiApplication.instance()
+    if app is not None:
+        scr = app.primaryScreen()
+        if scr is not None:
+            sz = scr.size()
+            return scr.name(), f"{sz.width()}x{sz.height()}"
+    return None, None
+
+
+def list_gsr_monitors(backend: GsrBackend | None) -> list[tuple[str, str]]:
+    """Query monitor list from GPU Screen Recorder (--list-monitors)."""
+    monitors: list[tuple[str, str]] = []
+    if backend is None:
+        return monitors
+    try:
+        res = subprocess.run(
+            backend.base_cmd + ["--list-monitors"],
+            capture_output=True,
+            text=True,
+            timeout=1.8,
+            check=False,
+        )
+        if res.returncode == 0:
+            for line in res.stdout.splitlines():
+                if "|" in line:
+                    name, dim = line.split("|", 1)
+                    n, d = name.strip(), dim.strip()
+                    if n:
+                        monitors.append((n, d))
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return monitors
+
+
+def match_primary_monitor(
+    monitors: list[tuple[str, str]],
+    primary_name: str | None,
+    primary_res: str | None,
+) -> str | None:
+    """Match an X11 primary screen hint to the exact GSR monitor identifier."""
+    if not monitors:
+        return None
+    if len(monitors) == 1:
+        return monitors[0][0]
+
+    norm_p = _normalize_connector_name(primary_name)
+    if norm_p:
+        for m_name, _dim in monitors:
+            if _normalize_connector_name(m_name) == norm_p:
+                return m_name
+
+    if primary_res:
+        res_matches = [m_name for m_name, m_dim in monitors if primary_res in m_dim]
+        if len(res_matches) == 1:
+            return res_matches[0]
+    return None
+
+
+def resolve_capture_target(
+    cfg: ClipsConfig,
+    backend: GsrBackend,
+    gsr_monitors: list[tuple[str, str]] | None = None,
+    primary_hint: tuple[str | None, str | None] | None = None,
+) -> str:
     """Choose best capture source universally for Wayland/X11/native/Flatpak."""
-    if cfg.capture_target and cfg.capture_target != "auto":
-        return cfg.capture_target
-    session = os.environ.get("XDG_SESSION_TYPE", "").lower()
-    if backend.is_user_flatpak and session == "wayland":
+    wayland = is_wayland_session()
+    req = (cfg.capture_target or "auto").strip()
+
+    if req not in ("auto", "portal"):
+        return req
+    if not wayland:
+        # On X11, portal screencast is Wayland-only; auto picks the primary monitor cleanly.
+        mons = list_gsr_monitors(backend) if gsr_monitors is None else gsr_monitors
+        p_name, p_res = get_primary_x11_hint() if primary_hint is None else primary_hint
+        primary_mon = match_primary_monitor(mons, p_name, p_res)
+        return primary_mon or "screen"
+    if req == "portal" or backend.is_user_flatpak:
         return "portal"
     return "screen"
 
@@ -196,6 +307,9 @@ def build_gsr_args(
                 str(token_path),
             ]
         )
+    elif target == "focused":
+        _, p_res = get_primary_x11_hint()
+        args.extend(["-s", p_res or "1920x1080"])
 
     args.extend(
         [
@@ -252,33 +366,32 @@ def list_monitors_and_audio(
     backend: GsrBackend | None,
 ) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
     """Return (capture_targets, audio_sources) pairs of (value, label)."""
-    targets: list[tuple[str, str]] = [
-        ("auto", "Automático (recomendado)"),
-        ("portal", "Selector de pantalla Wayland (Portal)"),
-        ("screen", "Pantalla principal directa (KMS/X11)"),
-    ]
+    wayland = is_wayland_session()
+    if wayland:
+        targets: list[tuple[str, str]] = [
+            ("auto", "Automático (recomendado)"),
+            ("portal", "Selector de pantalla Wayland (Portal)"),
+            ("screen", "Pantalla principal directa (KMS)"),
+        ]
+    else:
+        targets = [
+            ("auto", "Automático (pantalla principal)"),
+            ("focused", "Ventana / juego activo en primer plano (X11)"),
+            ("screen", "Primer monitor detectado (X11/KMS)"),
+        ]
     audio_sources: list[tuple[str, str]] = [
         ("all_outputs", "Todas las salidas del PC (recomendado)"),
         ("default_output", "Salida predeterminada del sistema"),
     ]
 
-    if backend is not None:
-        try:
-            res = subprocess.run(
-                backend.base_cmd + ["--list-monitors"],
-                capture_output=True,
-                text=True,
-                timeout=1.5,
-                check=False,
-            )
-            if res.returncode == 0:
-                for line in res.stdout.splitlines():
-                    if "|" in line:
-                        name, dim = line.split("|", 1)
-                        targets.append((name.strip(), f"Monitor {name.strip()} ({dim.strip()})"))
-        except (OSError, subprocess.TimeoutExpired):
-            pass
+    mons = list_gsr_monitors(backend)
+    p_name, p_res = get_primary_x11_hint() if not wayland else (None, None)
+    primary_mon = match_primary_monitor(mons, p_name, p_res) if not wayland else None
+    for m_name, m_dim in mons:
+        tag = " ★ Principal" if primary_mon == m_name else ""
+        targets.append((m_name, f"Monitor {m_name} ({m_dim}){tag}"))
 
+    if backend is not None:
         try:
             res = subprocess.run(
                 backend.base_cmd + ["--list-audio-devices"],

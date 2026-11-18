@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
     QHBoxLayout,
+    QInputDialog,
     QKeySequenceEdit,
     QLabel,
     QLineEdit,
@@ -46,6 +47,7 @@ from .recorder import (
     ClipRecorderController,
     detect_gsr_backend,
     install_gsr_flatpak_user,
+    is_wayland_session,
     list_monitors_and_audio,
 )
 from .sound_fx import play_clip_saved_chime, play_voice_cue
@@ -612,19 +614,68 @@ class ClipsTabWidget(QWidget):
             self._recorder.start_buffer()
 
     def _on_pick_screen(self) -> None:
-        self._config.buffer_enabled = True
-        if self._config.capture_target not in ("auto", "portal"):
-            self._syncing = True
-            self._config.capture_target = "portal"
-            self._select_combo_data(self._target_combo, "portal")
-            self._syncing = False
-        save_clips_config(self._config)
-        self._recorder.update_config(self._config, restart_if_running=False)
-        self._set_feedback(
-            "Abriendo selector del sistema para elegir pantalla, ventana o juego...",
-            "warn",
+        if is_wayland_session():
+            self._config.buffer_enabled = True
+            if self._config.capture_target not in ("auto", "portal"):
+                self._syncing = True
+                self._config.capture_target = "portal"
+                self._select_combo_data(self._target_combo, "portal")
+                self._syncing = False
+            save_clips_config(self._config)
+            self._recorder.update_config(self._config, restart_if_running=False)
+            self._set_feedback(
+                "Abriendo selector del sistema para elegir pantalla, ventana o juego...",
+                "warn",
+            )
+            self._recorder.reset_portal_session(start_after=True)
+            return
+
+        # X11 (KDE X11, GNOME X11, XFCE, etc.): show direct monitor/window picker
+        self._populate_devices()
+        options: list[tuple[str, str]] = []
+        for i in range(self._target_combo.count()):
+            val = str(self._target_combo.itemData(i) or "")
+            lbl = self._target_combo.itemText(i)
+            if val and val != "portal":
+                options.append((val, lbl))
+
+        if not options:
+            QMessageBox.warning(
+                self,
+                "Elegir pantalla (X11)",
+                "No se detectaron monitores todavía. Asegúrate de tener GPU Screen Recorder instalado.",
+            )
+            return
+
+        labels = [lbl for _, lbl in options]
+        cur_idx = next(
+            (i for i, (v, _) in enumerate(options) if v == self._config.capture_target),
+            0,
         )
-        self._recorder.reset_portal_session(start_after=True)
+        chosen_lbl, ok = QInputDialog.getItem(
+            self,
+            "Elegir pantalla o ventana (X11)",
+            "Elige qué pantalla o ventana grabar en esta sesión X11:",
+            labels,
+            cur_idx,
+            False,
+        )
+        if not ok:
+            return
+
+        chosen_val = options[labels.index(chosen_lbl)][0]
+        self._syncing = True
+        self._config.capture_target = chosen_val
+        self._config.buffer_enabled = True
+        self._select_combo_data(self._target_combo, chosen_val)
+        self._syncing = False
+        save_clips_config(self._config)
+        self._recorder.update_config(
+            self._config, restart_if_running=self._recorder.is_running()
+        )
+        if not self._recorder.is_running():
+            self._recorder.start_buffer()
+        self._set_feedback(f"Grabando objetivo X11: {chosen_lbl}", "ok")
 
     def _trigger_save_clip(self, source: str, override_sec: int | None = None) -> None:
         now = time.monotonic()

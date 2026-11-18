@@ -567,6 +567,39 @@ class ClipsSubsystemTests(unittest.TestCase):
                 label="Nativo",
             )
             self.assertEqual(resolve_capture_target(cfg, native), "screen")
+
+            # On X11, multi-monitor 'auto' or stale 'portal' resolves to primary monitor cleanly
+            from antidrift.clips.recorder import match_primary_monitor
+
+            os.environ["XDG_SESSION_TYPE"] = "x11"
+            mons = [("HDMI-A-1", "1920x1080"), ("DP-2", "2560x1440")]
+            self.assertEqual(match_primary_monitor(mons, "DisplayPort-2", "2560x1440"), "DP-2")
+            self.assertEqual(match_primary_monitor(mons, "HDMI-1", "1920x1080"), "HDMI-A-1")
+            self.assertEqual(
+                resolve_capture_target(
+                    ClipsConfig(capture_target="auto"),
+                    user_fp,
+                    gsr_monitors=mons,
+                    primary_hint=("DP-2", "2560x1440"),
+                ),
+                "DP-2",
+            )
+            self.assertEqual(
+                resolve_capture_target(
+                    ClipsConfig(capture_target="portal"),
+                    user_fp,
+                    gsr_monitors=mons,
+                    primary_hint=("DP-2", "2560x1440"),
+                ),
+                "DP-2",
+            )
+            _, focused_args = build_gsr_args(
+                ClipsConfig(capture_target="focused"),
+                native,
+                desktop_monitors=["sink1.monitor"],
+            )
+            self.assertIn("-s", focused_args)
+
             self.assertIsNotNone(detect_gsr_backend())
         finally:
             if old_session is None:
