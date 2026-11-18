@@ -615,13 +615,36 @@ class ControllerWidget(QWidget):
         p.drawEllipse(gc, g_rad, g_rad)
 
         if spec.family == "xbox":
-            # Crisp curved Xbox X cross arcs
-            p.setPen(QPen(QColor("#FFFFFF") if g_pressed else QColor("#E2E8F0"), 2.1))
-            r = g_rad * 0.56
-            p.drawArc(QRectF(gc.x() - r * 1.4, gc.y() - r * 0.8, r * 1.6, r * 2.1), 25 * 16, 115 * 16)
-            p.drawArc(QRectF(gc.x() - r * 0.2, gc.y() - r * 0.8, r * 1.6, r * 2.1), 40 * 16, 115 * 16)
-            p.drawLine(QPointF(gc.x() - r * 0.72, gc.y() - r * 0.55), QPointF(gc.x() + r * 0.72, gc.y() + r * 0.72))
-            p.drawLine(QPointF(gc.x() + r * 0.72, gc.y() - r * 0.55), QPointF(gc.x() - r * 0.72, gc.y() + r * 0.72))
+            # Crisp curved Xbox sphere X clipped inside the Guide button
+            p.save()
+            clip = QPainterPath()
+            clip.addEllipse(gc, g_rad - 1.8, g_rad - 1.8)
+            p.setClipPath(clip)
+            p.setPen(
+                QPen(
+                    QColor("#FFFFFF") if g_pressed else QColor("#E2E8F0"),
+                    2.45,
+                    Qt.SolidLine,
+                    Qt.RoundCap,
+                    Qt.RoundJoin,
+                )
+            )
+            p.setBrush(Qt.NoBrush)
+            r = g_rad * 0.88
+            cx, cy = gc.x(), gc.y()
+            for sign in (-1.0, 1.0):
+                arm = QPainterPath()
+                arm.moveTo(cx + sign * r * 0.72, cy - r * 0.68)
+                arm.cubicTo(
+                    cx + sign * r * 0.16,
+                    cy - r * 0.34,
+                    cx - sign * r * 0.28,
+                    cy + r * 0.08,
+                    cx - sign * r * 0.76,
+                    cy + r * 0.78,
+                )
+                p.drawPath(arm)
+            p.restore()
         elif spec.family == "playstation":
             p.setPen(QColor("#FFFFFF") if g_pressed else QColor("#94A3B8"))
             p.setFont(QFont("JetBrains Mono", 8, QFont.Bold))
