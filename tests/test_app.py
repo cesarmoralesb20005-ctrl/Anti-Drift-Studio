@@ -168,6 +168,30 @@ class ConfigAndUniversalMathTests(unittest.TestCase):
             self.assertEqual(res.returncode, 0, res.stderr)
             self.assertTrue(out_bin.exists())
 
+    def test_bluetooth_uhid_not_virtual(self) -> None:
+        from antidrift.evdev_reader import _is_virtual_sys_device
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            # Simulated BlueZ uhid Bluetooth Joy-Con: /virtual/misc/uhid/... must NOT be treated as virtual uinput
+            bt_real = root / "devices" / "virtual" / "misc" / "uhid" / "0005:057E:2006.0007" / "input" / "input50"
+            bt_real.mkdir(parents=True)
+            (bt_real / "uevent").write_text('PHYS="00:1a:7d:da:71:11"\n', encoding="utf-8")
+            (bt_real / "phys").write_text("00:1a:7d:da:71:11\n", encoding="utf-8")
+            ev_bt = root / "class_input" / "event257"
+            ev_bt.mkdir(parents=True)
+            (ev_bt / "device").symlink_to(bt_real)
+            self.assertFalse(_is_virtual_sys_device(ev_bt, "Joy-Con (L)", "00:1a:7d:da:71:11"))
+
+            # Simulated uinput virtual pad: /virtual/input/... MUST be treated as virtual
+            virt_real = root / "devices" / "virtual" / "input" / "input60"
+            virt_real.mkdir(parents=True)
+            (virt_real / "uevent").write_text('PHYS="antidrift:event257"\n', encoding="utf-8")
+            ev_virt = root / "class_input" / "event258"
+            ev_virt.mkdir(parents=True)
+            (ev_virt / "device").symlink_to(virt_real)
+            self.assertTrue(_is_virtual_sys_device(ev_virt, "Custom Joy-Con", "antidrift:event257"))
+
     def test_universal_axis_scaling(self) -> None:
         self.assertEqual(scale_hw_to_i16(0, 0, 255), -32768)
         self.assertEqual(scale_hw_to_i16(255, 0, 255), 32767)

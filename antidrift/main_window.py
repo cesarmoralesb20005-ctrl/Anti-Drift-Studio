@@ -688,11 +688,11 @@ class MainWindow(QMainWindow):
         self._sim_btn.toggled.connect(self._on_toggle_simulator)
         top_row.addWidget(self._sim_btn)
 
-        self._pad_switch_btn = QPushButton("Mandos ▾")
-        self._pad_switch_btn.setObjectName("MiniPill")
+        self._pad_switch_btn = QPushButton("Cambiar mando ▾")
+        self._pad_switch_btn.setObjectName("AccentBtn")
         self._pad_switch_btn.setVisible(False)
         self._pad_switch_btn.setToolTip(
-            "Cambiar qué mando conectado se muestra y calibra (el anti-drift protege todos a la vez)"
+            "Elige qué mando ver y calibrar aquí (el modo multi-mando corrige todos a la vez)"
         )
         self._pad_switch_menu = QMenu(self._pad_switch_btn)
         self._pad_switch_btn.setMenu(self._pad_switch_menu)
@@ -1531,15 +1531,17 @@ class MainWindow(QMainWindow):
 
         self._pad_switch_btn.setVisible(True)
         cur_idx = 1
+        target = (
+            self._focused_device_path
+            if self._focused_device_path != "auto"
+            else self._last_state.physical_path
+        )
         for i, dev in enumerate(devs, start=1):
-            if self._last_state.physical_path == dev.path or self._focused_device_path == dev.path:
+            if target == dev.path:
                 cur_idx = i
             act = self._pad_switch_menu.addAction(f"Mando {i}: {dev.name}")
             act.setCheckable(True)
-            act.setChecked(
-                self._focused_device_path == dev.path
-                or (self._focused_device_path == "auto" and self._last_state.physical_path == dev.path)
-            )
+            act.setChecked(target == dev.path or (i == 1 and not target))
             act.triggered.connect(lambda _=False, p=dev.path: self._select_focused_device(p))
         self._pad_switch_btn.setText(f"Mando {cur_idx}/{len(devs)} ▾")
 
@@ -1948,7 +1950,7 @@ class MainWindow(QMainWindow):
 
         if state.connected_count != prev_count or state.physical_stable_id != prev_stable:
             self._connected_devs_cache = list_physical_controllers()
-            self._rebuild_pad_switch_menu(self._connected_devs_cache)
+            self._refresh_device_selector()
 
         if state.mode in ("virtual", "direct"):
             pad_name = state.physical_name or "Mando conectado"
@@ -2141,6 +2143,10 @@ class MainWindow(QMainWindow):
         self._app_autostart_chk.blockSignals(True)
         self._app_autostart_chk.setChecked(is_app_autostart_enabled())
         self._app_autostart_chk.blockSignals(False)
+
+        cur_devs = list_physical_controllers()
+        if [d.path for d in cur_devs] != [d.path for d in self._connected_devs_cache]:
+            self._refresh_device_selector()
 
     def _run_svc(self, action: str) -> None:
         ok, msg = run_service_action(action)

@@ -245,14 +245,14 @@ def _safe_close(fd: int | None) -> None:
 def _is_virtual_sys_device(ev_dir: Path, name: str, phys: str) -> bool:
     dev_dir = ev_dir / "device"
     try:
-        if "/virtual/" in os.path.realpath(dev_dir):
+        if "/virtual/input/" in os.path.realpath(dev_dir):
             return True
     except OSError:
         pass
     uevent = _parse_uevent(dev_dir / "uevent")
     devpath = uevent.get("DEVPATH", "")
     phys_val = (phys or _read_sys_text(dev_dir / "phys") or uevent.get("PHYS", "")).strip('"')
-    if "/virtual/" in devpath:
+    if "/virtual/input/" in devpath:
         return True
     if phys_val.startswith("antidrift:"):
         return True
@@ -285,7 +285,7 @@ def _score_gamepad(ev_sys: Path) -> ControllerDeviceInfo | None:
         return None
 
     lowered = name.lower()
-    if any(bad in lowered for bad in ("motion sensor", "touchpad", "accelerometer", "mouse")):
+    if any(bad in lowered for bad in ("motion sensor", "touchpad", "accelerometer", "mouse", "(imu)")):
         return None
 
     dev_node = f"/dev/input/{ev_sys.name}"
@@ -298,18 +298,27 @@ def _score_gamepad(ev_sys: Path) -> ControllerDeviceInfo | None:
         fcntl.ioctl(fd, EVIOCGBIT_KEY_96, key_bits)
         fcntl.ioctl(fd, EVIOCGBIT_ABS_8, abs_bits)
         has_xy = _bit_set(abs_bits, ABS_X) and _bit_set(abs_bits, ABS_Y)
+        has_rxry = _bit_set(abs_bits, ABS_RX) and _bit_set(abs_bits, ABS_RY)
         has_mouse = _bit_set(key_bits, BTN_LEFT)
         has_south = _bit_set(key_bits, BTN_SOUTH)
         has_joy = _bit_set(key_bits, BTN_TRIGGER)
-        if not has_xy or has_mouse or not (has_south or has_joy):
+        has_dpad_btns = _bit_set(key_bits, BTN_DPAD_UP)
+        has_joycon_btns = (
+            _bit_set(key_bits, 305)  # BTN_EAST (Joy-Con R)
+            or _bit_set(key_bits, 317)  # BTN_THUMBL (Joy-Con L)
+            or _bit_set(key_bits, 318)  # BTN_THUMBR (Joy-Con R)
+        )
+        if not (has_xy or has_rxry) or has_mouse or not (
+            has_south or has_joy or has_dpad_btns or has_joycon_btns
+        ):
             return None
 
         score = 10
         if has_south:
             score += 50
-        if _bit_set(abs_bits, ABS_RX) and _bit_set(abs_bits, ABS_RY):
+        if has_xy and has_rxry:
             score += 25
-        if _bit_set(abs_bits, ABS_HAT0X):
+        if _bit_set(abs_bits, ABS_HAT0X) or has_dpad_btns:
             score += 15
         if any(
             kw in lowered
@@ -320,6 +329,8 @@ def _score_gamepad(ev_sys: Path) -> ControllerDeviceInfo | None:
                 "wireless controller",
                 "switch",
                 "pro controller",
+                "joy-con",
+                "nintendo",
                 "8bitdo",
                 "gamesir",
                 "gamepad",
@@ -365,7 +376,7 @@ def list_virtual_controllers() -> list[tuple[str, str, str]]:
             real_dev = os.path.realpath(dev_dir)
         except OSError:
             real_dev = ""
-        is_virt_node = "/virtual/" in real_dev or "/virtual/" in uevent.get("DEVPATH", "")
+        is_virt_node = "/virtual/input/" in real_dev or "/virtual/input/" in uevent.get("DEVPATH", "")
         is_our_virt = phys.startswith("antidrift:") or (
             vid == "045e" and pid == "028e" and is_virt_node
         )
@@ -443,6 +454,9 @@ def probe_hardware_map(fd: int) -> HardwareAxisMap:
         fcntl.ioctl(fd, EVIOCGBIT_ABS_8, abs_bits)
     except OSError:
         return hm
+
+    if not (_bit_set(abs_bits, ABS_X) and _bit_set(abs_bits, ABS_Y)):
+        hm.lx_code, hm.ly_code = -1, -1
 
     if _bit_set(abs_bits, ABS_RX) and _bit_set(abs_bits, ABS_RY):
         hm.rx_code, hm.ry_code = ABS_RX, ABS_RY

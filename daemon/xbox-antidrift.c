@@ -549,7 +549,7 @@ static int bit_is_set(const unsigned char *bits, int code) {
 static int is_virtual_event(const char *ev_name) {
     char dev_link[300], resolved[512] = {0};
     snprintf(dev_link, sizeof(dev_link), "/sys/class/input/%s/device", ev_name);
-    if (realpath(dev_link, resolved) && strstr(resolved, "/virtual/") != NULL) {
+    if (realpath(dev_link, resolved) && strstr(resolved, "/virtual/input/") != NULL) {
         return 1;
     }
 
@@ -580,7 +580,7 @@ static int is_virtual_event(const char *ev_name) {
                     is_antidrift_phys = 1;
                 }
             }
-            if (strncmp(uline, "DEVPATH=", 8) == 0 && strstr(uline, "/virtual/")) {
+            if (strncmp(uline, "DEVPATH=", 8) == 0 && strstr(uline, "/virtual/input/")) {
                 is_virtual_devpath = 1;
             }
         }
@@ -599,7 +599,8 @@ static int score_gamepad_node(const char *ev_name, const char *dev_node) {
     read_sys_line(name_path, dev_name, sizeof(dev_name));
 
     if (strstr(dev_name, "Motion Sensor") || strstr(dev_name, "Touchpad") ||
-        strstr(dev_name, "Accelerometer") || strstr(dev_name, "Mouse")) {
+        strstr(dev_name, "Accelerometer") || strstr(dev_name, "Mouse") ||
+        strstr(dev_name, "(IMU)")) {
         return -1;
     }
 
@@ -612,18 +613,25 @@ static int score_gamepad_node(const char *ev_name, const char *dev_node) {
     if (ioctl(fd, EVIOCGBIT(EV_KEY, sizeof(key_bits)), key_bits) >= 0 &&
         ioctl(fd, EVIOCGBIT(EV_ABS, sizeof(abs_bits)), abs_bits) >= 0) {
         int has_xy = bit_is_set(abs_bits, ABS_X) && bit_is_set(abs_bits, ABS_Y);
+        int has_rxry = bit_is_set(abs_bits, ABS_RX) && bit_is_set(abs_bits, ABS_RY);
         int has_mouse_left = bit_is_set(key_bits, BTN_LEFT);
         int has_south = bit_is_set(key_bits, BTN_SOUTH);
         int has_trigger_joy = bit_is_set(key_bits, BTN_TRIGGER);
+        int has_dpad_btns = bit_is_set(key_bits, BTN_DPAD_UP);
+        int has_joycon_btns = bit_is_set(key_bits, BTN_EAST) ||
+                              bit_is_set(key_bits, BTN_THUMBL) ||
+                              bit_is_set(key_bits, BTN_THUMBR);
 
-        if (has_xy && !has_mouse_left && (has_south || has_trigger_joy)) {
+        if ((has_xy || has_rxry) && !has_mouse_left &&
+            (has_south || has_trigger_joy || has_dpad_btns || has_joycon_btns)) {
             score = 10;
             if (has_south) score += 50;
-            if (bit_is_set(abs_bits, ABS_RX) && bit_is_set(abs_bits, ABS_RY)) score += 25;
-            if (bit_is_set(abs_bits, ABS_HAT0X)) score += 15;
+            if (has_xy && has_rxry) score += 25;
+            if (bit_is_set(abs_bits, ABS_HAT0X) || has_dpad_btns) score += 15;
             if (strstr(dev_name, "Xbox") || strstr(dev_name, "X-Box") ||
                 strstr(dev_name, "DualSense") || strstr(dev_name, "Wireless Controller") ||
                 strstr(dev_name, "Switch") || strstr(dev_name, "Pro Controller") ||
+                strstr(dev_name, "Joy-Con") || strstr(dev_name, "Nintendo") ||
                 strstr(dev_name, "8BitDo") || strstr(dev_name, "GameSir") ||
                 strstr(dev_name, "Gamepad")) {
                 score += 20;
@@ -721,6 +729,11 @@ static HardwareMap probe_hardware_map(int src_fd, int src_is_rw) {
     ioctl(src_fd, EVIOCGBIT(EV_ABS, sizeof(abs_bits)), abs_bits);
     if (src_is_rw && ioctl(src_fd, EVIOCGBIT(EV_FF, sizeof(ff_bits)), ff_bits) >= 0) {
         hm.has_ff_rumble = bit_is_set(ff_bits, FF_RUMBLE);
+    }
+
+    if (!bit_is_set(abs_bits, ABS_X) || !bit_is_set(abs_bits, ABS_Y)) {
+        hm.lx_code = -1;
+        hm.ly_code = -1;
     }
 
     if (bit_is_set(abs_bits, ABS_RX) && bit_is_set(abs_bits, ABS_RY)) {
