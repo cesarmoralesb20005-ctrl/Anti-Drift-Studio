@@ -676,6 +676,77 @@ class ClipsSubsystemTests(unittest.TestCase):
                 QKeySequence(combo_str)[0].toCombined(),
             )
 
+    def test_kde_globalaccel_sets_present_flag_and_x11_companion(self) -> None:
+        from contextlib import contextmanager
+        from unittest import mock
+
+        from antidrift.clips.hotkey_listener import GlobalHotkeyThread
+
+        calls: list[tuple[str, object]] = []
+
+        class _FakeReply:
+            def __init__(self, body):
+                self.body = body
+
+        class _FakeMsg:
+            def __init__(self, body):
+                self.body = body
+
+        class _FakeConn:
+            def send_and_get_reply(self, msg):
+                member = msg.header.fields.get(3)  # HeaderFields.member
+                calls.append((member, msg.body))
+                if member == "NameHasOwner":
+                    return _FakeReply([True])
+                if member == "getComponent":
+                    return _FakeReply(["/component/xbox_antidrift_gui"])
+                return _FakeReply([])
+
+            @contextmanager
+            def filter(self, _rule):
+                yield object()
+
+            def recv_until_filtered(self, _q, timeout=0.25):
+                # Emit one globalShortcutPressed then request stop
+                th._stop_requested = True
+                return _FakeMsg(("xbox-antidrift-gui", "save_clip", 1))
+
+            def close(self):
+                calls.append(("close", None))
+
+        th = GlobalHotkeyThread("Alt+Shift+C")
+        triggered: list[tuple[str, int]] = []
+        th.hotkey_triggered.connect(lambda src, sec: triggered.append((src, sec)))
+
+        with mock.patch("jeepney.io.blocking.open_dbus_connection", return_value=_FakeConn()):
+            ok = th._run_kde_globalaccel_loop()
+
+        self.assertTrue(ok)
+        set_sc = [body for name, body in calls if name == "setShortcut"]
+        self.assertTrue(set_sc)
+        self.assertEqual(set_sc[0][2], 6)  # SetPresent (2) | NoAutoloading (4)
+        self.assertTrue(any(name == "setInactive" for name, _ in calls))
+        self.assertEqual(triggered, [("Atajo global (Alt+Shift+C)", 0)])
+
+        # Verify run() runs XQueryKeymap companion with emit_status=False when DISPLAY is set
+        x11_kwargs: list[dict] = []
+        th2 = GlobalHotkeyThread("Alt+Shift+C")
+        th2._stop_requested = True
+        with (
+            mock.patch.dict(os.environ, {"DISPLAY": ":1", "XDG_SESSION_TYPE": "wayland"}, clear=False),
+            mock.patch.object(th2, "_run_ipc_server", return_value=None),
+            mock.patch.object(th2, "_readable_keyboards", return_value=[]),
+            mock.patch.object(th2, "_kde_kglobalaccel_available", return_value=True),
+            mock.patch.object(th2, "_run_kde_globalaccel_loop", return_value=True),
+            mock.patch.object(
+                th2,
+                "_run_x11_loop",
+                side_effect=lambda emit_status=True: x11_kwargs.append({"emit_status": emit_status}) or True,
+            ),
+        ):
+            th2.run()
+        self.assertEqual(x11_kwargs, [{"emit_status": False}])
+
     def test_distro_deps_detection(self) -> None:
         from antidrift.deps import DistroInfo, build_distro_install_command, check_dependencies, detect_distro
 

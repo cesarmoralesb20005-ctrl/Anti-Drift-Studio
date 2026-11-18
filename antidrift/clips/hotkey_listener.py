@@ -529,10 +529,14 @@ class GlobalHotkeyThread(QThread):
 
         session = os.environ.get("XDG_SESSION_TYPE", "").strip().lower()
         is_x11 = session == "x11" or (not session and not os.environ.get("WAYLAND_DISPLAY"))
+        has_display = bool(os.environ.get("DISPLAY"))
 
-        # On X11, also watch XQueryKeymap in background even when KDE KGlobalAccel is active
-        if is_x11 and self._kde_kglobalaccel_available():
-            x11_t = threading.Thread(target=self._run_x11_loop, daemon=True)
+        # Run XQueryKeymap companion listener whenever DISPLAY is present (covers
+        # fullscreen X11 games with XGrabKeyboard and XWayland Proton/Wine games).
+        if has_display and self._kde_kglobalaccel_available():
+            x11_t = threading.Thread(
+                target=self._run_x11_loop, kwargs={"emit_status": False}, daemon=True
+            )
             x11_t.start()
             ok_kde = self._run_kde_globalaccel_loop()
             if ok_kde:
@@ -545,6 +549,12 @@ class GlobalHotkeyThread(QThread):
 
         if is_x11 and self._run_x11_loop():
             return
+
+        if has_display:
+            x11_bg = threading.Thread(
+                target=self._run_x11_loop, kwargs={"emit_status": False}, daemon=True
+            )
+            x11_bg.start()
 
         self._run_portal_loop()
         while not self._stop_requested:
@@ -643,12 +653,13 @@ class GlobalHotkeyThread(QThread):
                 conn.send_and_get_reply(
                     new_method_call(ka, "doRegister", "as", (action_id,))
                 )
-                # Persist shortcut & activate immediately in KWin compositor
+                # SetForeignShortcut overrides stale kglobalshortcutsrc entries, then
+                # SetPresent (0x2) | NoAutoloading (0x4) = 6 activates KWin/X11 grabbing.
                 conn.send_and_get_reply(
                     new_method_call(ka, "setForeignShortcut", "asai", (action_id, [kc]))
                 )
                 conn.send_and_get_reply(
-                    new_method_call(ka, "setShortcut", "asaiu", (action_id, [kc], 4))
+                    new_method_call(ka, "setShortcut", "asaiu", (action_id, [kc], 6))
                 )
                 self.backend_status.emit(
                     f"Atajo global KDE activo ({combo_str} · funciona dentro de juegos)"
@@ -686,11 +697,17 @@ class GlobalHotkeyThread(QThread):
             return False
         finally:
             try:
+                conn.send_and_get_reply(
+                    new_method_call(ka, "setInactive", "as", (action_id,))
+                )
+            except Exception:
+                pass
+            try:
                 conn.close()
             except Exception:
                 pass
 
-    def _run_x11_loop(self) -> bool:
+    def _run_x11_loop(self, emit_status: bool = True) -> bool:
         """Poll X11 global keymap via libX11 XQueryKeymap (works inside fullscreen X11 games)."""
         try:
             x11 = ctypes.CDLL("libX11.so.6")
@@ -740,9 +757,10 @@ class GlobalHotkeyThread(QThread):
 
         with self._lock:
             init_combo = self._combo
-        self.backend_status.emit(
-            f"Atajo global X11 activo ({init_combo} · funciona dentro de juegos)"
-        )
+        if emit_status:
+            self.backend_status.emit(
+                f"Atajo global X11 activo ({init_combo} · funciona dentro de juegos)"
+            )
 
         try:
             while not self._stop_requested:
