@@ -60,7 +60,7 @@ _X11_SPECIAL_KEYSYMS: dict[str, str] = {
 
 _X11_MOD_KEYSYMS: dict[str, tuple[str, ...]] = {
     "CTRL": ("Control_L", "Control_R"),
-    "ALT": ("Alt_L", "Alt_R"),
+    "ALT": ("Alt_L", "Alt_R", "ISO_Level3_Shift"),
     "SHIFT": ("Shift_L", "Shift_R"),
     "META": ("Super_L", "Super_R"),
 }
@@ -534,8 +534,11 @@ class GlobalHotkeyThread(QThread):
         if is_x11 and self._kde_kglobalaccel_available():
             x11_t = threading.Thread(target=self._run_x11_loop, daemon=True)
             x11_t.start()
-            if self._run_kde_globalaccel_loop():
+            ok_kde = self._run_kde_globalaccel_loop()
+            if ok_kde:
+                x11_t.join(timeout=0.5)
                 return
+            x11_t.join(timeout=0.5)
 
         if self._run_kde_globalaccel_loop():
             return
@@ -734,7 +737,6 @@ class GlobalHotkeyThread(QThread):
         mod_codes: list[tuple[int, ...]] = []
         main_code = 0
         was_main_down = False
-        last_fire = 0.0
 
         with self._lock:
             init_combo = self._combo
