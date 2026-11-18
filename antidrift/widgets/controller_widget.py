@@ -38,6 +38,7 @@ class _ControllerLayoutSpec:
     rt_rect: QRectF
     trigger_labels: tuple[str, str]
     bumper_labels: tuple[str, str]
+    share: QPointF | None = None
     touchpad_rect: QRectF | None = None
 
 
@@ -57,6 +58,7 @@ _SPECS: dict[str, _ControllerLayoutSpec] = {
         rt_rect=QRectF(390, 14, 86, 38),
         trigger_labels=("LT", "RT"),
         bumper_labels=("LB", "RB"),
+        share=QPointF(300.0, 218.0),
     ),
     "playstation": _ControllerLayoutSpec(
         family="playstation",
@@ -248,7 +250,12 @@ class ControllerWidget(QWidget):
         self.simulated_state_changed.emit(self._state)
 
     def _extra_badge_rects(self) -> list[tuple[int, QRectF]]:
-        codes = sorted(self._state.extra_buttons.keys())[:8]
+        fam = self.active_family()
+        codes = [
+            c
+            for c in sorted(self._state.extra_buttons.keys())
+            if not (fam == "xbox" and c == 167)
+        ][:8]
         if not codes:
             return []
         badge_w = 50.0
@@ -312,6 +319,15 @@ class ControllerWidget(QWidget):
             self._state.rt = TRIGGER_MAX if self._state.rt < 500 else 0
             self._emit_sim()
             return
+
+        if spec.share is not None:
+            s_rect = QRectF(spec.share.x() - 13.0, spec.share.y() - 11.0, 26.0, 22.0)
+            if s_rect.contains(p):
+                self._state.extra_buttons[167] = not self._state.extra_buttons.get(
+                    167, False
+                )
+                self._emit_sim()
+                return
 
         for code, rect in self._extra_badge_rects():
             if rect.contains(p):
@@ -680,6 +696,51 @@ class ControllerWidget(QWidget):
                     Qt.AlignCenter,
                     symbol,
                 )
+
+        if spec.share is not None:
+            sh_pressed = bool(
+                self._state.extra_buttons.get(167, False)
+                or self._state.buttons.get("SHARE", False)
+            )
+            sc = spec.share
+            sh_rect = QRectF(sc.x() - 11.0, sc.y() - 8.5, 22.0, 17.0)
+            p.setPen(
+                QPen(
+                    QColor("#10B981")
+                    if sh_pressed
+                    else QColor("#CBD5E1")
+                    if spec.family == "xbox"
+                    else QColor("#2D3748"),
+                    1.5,
+                )
+            )
+            p.setBrush(QColor("#059669") if sh_pressed else QColor("#080B0F"))
+            p.drawRoundedRect(sh_rect, 4.5, 4.5)
+
+            # Crisp Share/Capture upload tray + upward arrow icon
+            p.setPen(
+                QPen(
+                    QColor("#FFFFFF") if sh_pressed else QColor("#94A3B8"),
+                    1.45,
+                    Qt.SolidLine,
+                    Qt.RoundCap,
+                    Qt.RoundJoin,
+                )
+            )
+            p.setBrush(Qt.NoBrush)
+            tray = QPainterPath()
+            tray.moveTo(sc.x() - 4.4, sc.y() + 1.2)
+            tray.lineTo(sc.x() - 4.4, sc.y() + 4.0)
+            tray.lineTo(sc.x() + 4.4, sc.y() + 4.0)
+            tray.lineTo(sc.x() + 4.4, sc.y() + 1.2)
+            p.drawPath(tray)
+            arrow = QPainterPath()
+            arrow.moveTo(sc.x(), sc.y() + 1.8)
+            arrow.lineTo(sc.x(), sc.y() - 4.0)
+            arrow.moveTo(sc.x() - 2.6, sc.y() - 1.5)
+            arrow.lineTo(sc.x(), sc.y() - 4.2)
+            arrow.lineTo(sc.x() + 2.6, sc.y() - 1.5)
+            p.drawPath(arrow)
 
         if spec.family == "nintendo_pro":
             # Extra decorative Capture button to match Switch Pro

@@ -826,6 +826,116 @@ class ClipsSubsystemTests(unittest.TestCase):
                 else:
                     os.environ["XDG_CONFIG_HOME"] = old_xdg
 
+    def test_xbox_share_preview_and_custom_pad_combo(self) -> None:
+        from PySide6.QtCore import QPointF, Qt
+        from PySide6.QtGui import QMouseEvent
+        from PySide6.QtWidgets import QApplication
+        from unittest import mock
+
+        from antidrift.clips.clips_config import (
+            controller_shortcut_matches,
+            extract_pressed_pad_tokens,
+            format_controller_shortcut_label,
+            normalize_controller_shortcut,
+        )
+        from antidrift.clips.clips_tab import ClipsTabWidget
+        from antidrift.widgets.controller_widget import ControllerWidget
+
+        # 1. Token normalization, label formatting & multi-button matching
+        self.assertEqual(normalize_controller_shortcut("rb + view"), "VIEW+RB")
+        self.assertEqual(normalize_controller_shortcut("Captura"), "SHARE")
+        self.assertEqual(normalize_controller_shortcut("A+X+LB+RB"), "LB+RB+A+X")
+        self.assertEqual(
+            format_controller_shortcut_label("LT+RT+Y"),
+            "LT + RT + Y",
+        )
+
+        st_share = ControllerState(mode="live", extra_buttons={167: True})
+        self.assertEqual(extract_pressed_pad_tokens(st_share), ["SHARE"])
+        self.assertTrue(controller_shortcut_matches("SHARE", st_share))
+
+        st_chord = ControllerState(
+            mode="live",
+            buttons={**ControllerState().buttons, "LB": True, "RB": True, "A": True},
+            lt=800,
+            hat_y=-1,
+            extra_buttons={710: True},
+        )
+        self.assertTrue(controller_shortcut_matches("LB+RB+A", st_chord))
+        self.assertTrue(controller_shortcut_matches("LT+UP+KEY_710", st_chord))
+        self.assertFalse(controller_shortcut_matches("LB+RB+B", st_chord))
+
+        # 2. Xbox Share button exists on ControllerWidget preview and toggles 167 in simulator
+        _app = QApplication.instance() or QApplication([])
+        cw = ControllerWidget()
+        cw.resize(int(cw.LOGICAL_W), int(cw.LOGICAL_H))
+        cw.set_simulator_enabled(True)
+        share_pt = cw._layout_spec().share
+        self.assertIsNotNone(share_pt)
+        ev = QMouseEvent(
+            QMouseEvent.Type.MouseButtonPress,
+            QPointF(share_pt.x(), share_pt.y()),
+            Qt.LeftButton,
+            Qt.LeftButton,
+            Qt.NoModifier,
+        )
+        cw.mousePressEvent(ev)
+        self.assertTrue(cw._state.extra_buttons.get(167, False))
+
+        # 3. Interactive peak-hold capture & edge-triggered save on ClipsTabWidget
+        with tempfile.TemporaryDirectory() as tmp:
+            old_xdg = os.environ.get("XDG_CONFIG_HOME")
+            os.environ["XDG_CONFIG_HOME"] = tmp
+            try:
+                tab = ClipsTabWidget(start_background=False)
+                tab._btn_capture_pad.setChecked(True)
+                self.assertTrue(tab._capturing_pad)
+
+                tab.process_controller_state(
+                    ControllerState(
+                        mode="live",
+                        buttons={**ControllerState().buttons, "LB": True},
+                    )
+                )
+                tab.process_controller_state(
+                    ControllerState(
+                        mode="live",
+                        buttons={**ControllerState().buttons, "LB": True, "RB": True, "A": True},
+                    )
+                )
+                # Still capturing until released
+                self.assertTrue(tab._capturing_pad)
+                # Release all -> finalizes combo even with Replay off
+                tab.process_controller_state(ControllerState(mode="live"))
+                self.assertFalse(tab._capturing_pad)
+                self.assertEqual(tab._config.controller_shortcut, "LB+RB+A")
+                self.assertEqual(tab._pad_sc_combo.currentData(), "LB+RB+A")
+
+                # Edge-triggered clip trigger fires once per hold while Replay is active
+                saved_calls: list[str] = []
+                with (
+                    mock.patch.object(tab._recorder, "is_running", return_value=True),
+                    mock.patch.object(
+                        tab, "_trigger_save_clip", side_effect=lambda src: saved_calls.append(src)
+                    ),
+                ):
+                    chord_state = ControllerState(
+                        mode="live",
+                        buttons={**ControllerState().buttons, "LB": True, "RB": True, "A": True},
+                    )
+                    tab.process_controller_state(chord_state)
+                    tab.process_controller_state(chord_state)  # held -> no repeat
+                    tab.process_controller_state(ControllerState(mode="live"))  # release
+                    tab._last_ctrl_combo_fire = 0.0
+                    tab.process_controller_state(chord_state)  # second press -> fires again
+                self.assertEqual(len(saved_calls), 2)
+                tab.shutdown()
+            finally:
+                if old_xdg is None:
+                    os.environ.pop("XDG_CONFIG_HOME", None)
+                else:
+                    os.environ["XDG_CONFIG_HOME"] = old_xdg
+
     def test_distro_deps_detection(self) -> None:
         from antidrift.deps import DistroInfo, build_distro_install_command, check_dependencies, detect_distro
 
