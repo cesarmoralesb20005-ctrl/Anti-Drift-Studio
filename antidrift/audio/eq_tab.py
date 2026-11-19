@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import math
+import os
+import shutil
+import subprocess
+import time
 
-from PySide6.QtCore import QPointF, QRectF, QTimer, Qt, Signal
+from PySide6.QtCore import QPointF, QRectF, QThread, QTimer, Qt, Signal
 from PySide6.QtGui import (
     QColor,
     QFont,
@@ -315,6 +319,59 @@ class EqCurveWidget(QWidget):
             p.drawText(pill, Qt.AlignCenter, tag)
 
 
+class _AudioEventThread(QThread):
+    """Watch `pactl subscribe` for instant audio sink / app stream changes."""
+
+    audio_changed = Signal(bool)  # include_sinks
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self._stop_requested = False
+        self._proc: subprocess.Popen[str] | None = None
+
+    def stop(self) -> None:
+        self._stop_requested = True
+        if self._proc is not None:
+            try:
+                self._proc.terminate()
+            except OSError:
+                pass
+        self.wait(1200)
+
+    def run(self) -> None:
+        if not shutil.which("pactl"):
+            return
+        env = dict(os.environ)
+        env["LC_ALL"] = "C"
+        try:
+            self._proc = subprocess.Popen(
+                ["pactl", "subscribe"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                errors="replace",
+                env=env,
+            )
+            assert self._proc.stdout is not None
+            for line in self._proc.stdout:
+                if self._stop_requested:
+                    break
+                low = line.lower()
+                if "on sink-input" in low:
+                    self.audio_changed.emit(False)
+                elif "on sink" in low or "on server" in low:
+                    self.audio_changed.emit(True)
+        except OSError:
+            pass
+        finally:
+            if self._proc is not None and self._proc.poll() is None:
+                try:
+                    self._proc.terminate()
+                except OSError:
+                    pass
+            self._proc = None
+
+
 class EqTabWidget(QWidget):
     """Friendly system sound controller and 10-band PipeWire Equalizer studio."""
 
@@ -327,6 +384,11 @@ class EqTabWidget(QWidget):
         self._band_val_labels: list[QLabel] = []
         self._active_sink_name: str = ""
         self._master_muted: bool = False
+        self._app_rows: dict[int, tuple[QWidget, QPushButton, QLabel, QSlider, QLabel]] = {}
+        self._app_last_drag: dict[int, float] = {}
+        self._empty_apps_lbl: QLabel | None = None
+        self._pending_sink_refresh = False
+        self._event_thread: _AudioEventThread | None = None
 
         self._live_timer = QTimer(self)
         self._live_timer.setSingleShot(True)
@@ -338,20 +400,64 @@ class EqTabWidget(QWidget):
         self._save_timer.setInterval(350)
         self._save_timer.timeout.connect(self._save_only)
 
+        self._auto_refresh_timer = QTimer(self)
+        self._auto_refresh_timer.setSingleShot(True)
+        self._auto_refresh_timer.setInterval(150)
+        self._auto_refresh_timer.timeout.connect(self._on_auto_audio_refresh)
+
+        self._mixer_poll_timer = QTimer(self)
+        self._mixer_poll_timer.setInterval(3500)
+        self._mixer_poll_timer.timeout.connect(self._on_periodic_mixer_poll)
+
         self._build_ui()
         self._apply_config_to_ui()
 
         if start_background:
+            self._event_thread = _AudioEventThread(self)
+            self._event_thread.audio_changed.connect(self._schedule_auto_audio_refresh)
+            self._event_thread.start()
+            self._mixer_poll_timer.start()
             QTimer.singleShot(250, self._initial_sync)
 
     def shutdown(self) -> None:
-        """Flush pending equalizer timers cleanly when closing the window."""
+        """Flush pending equalizer timers and stop audio event watcher cleanly."""
+        self._mixer_poll_timer.stop()
+        self._auto_refresh_timer.stop()
+        if self._event_thread is not None:
+            self._event_thread.stop()
+            self._event_thread = None
         if self._live_timer.isActive():
             self._live_timer.stop()
             self._flush_live_eq_params()
         if self._save_timer.isActive():
             self._save_timer.stop()
             self._save_only()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if self._start_background:
+            self.refresh_audio_devices()
+            self.refresh_app_streams()
+
+    def _schedule_auto_audio_refresh(self, include_sinks: bool) -> None:
+        if include_sinks:
+            self._pending_sink_refresh = True
+        self._auto_refresh_timer.start()
+
+    def _on_auto_audio_refresh(self) -> None:
+        if not self._start_background:
+            return
+        if self._pending_sink_refresh:
+            self._pending_sink_refresh = False
+            self.refresh_audio_devices()
+        else:
+            self._sync_master_volume_only()
+        self.refresh_app_streams()
+
+    def _on_periodic_mixer_poll(self) -> None:
+        if self._start_background and self.isVisible():
+            self._sync_master_volume_only()
+            self.refresh_app_streams()
 
     def _initial_sync(self) -> None:
         self.refresh_audio_devices()
@@ -699,43 +805,95 @@ class EqTabWidget(QWidget):
             self._config.bypass,
         )
 
+    def _sync_master_volume_only(self) -> None:
+        active: AudioSinkInfo | None = get_active_sink_info()
+        if active is None:
+            return
+        self._syncing = True
+        try:
+            self._active_sink_name = active.name
+            self._master_muted = active.muted
+            if not self._vol_slider.isSliderDown():
+                self._vol_slider.setValue(max(0, min(130, active.volume_pct)))
+                self._vol_lbl.setText(f"{active.volume_pct}%")
+            self._btn_mute.setChecked(active.muted)
+            self._btn_mute.setText("🔇" if active.muted else "🔊")
+        finally:
+            self._syncing = False
+
     def refresh_audio_devices(self) -> None:
         sinks = list_physical_sinks()
         self._syncing = True
         try:
-            self._sink_combo.clear()
-            self._sink_combo.addItem("Automático (salida predeterminada)", "auto")
-            for s in sinks:
-                self._sink_combo.addItem(s.description, s.name)
+            desired = [(s.description, s.name) for s in sinks]
+            current = [
+                (self._sink_combo.itemText(i), self._sink_combo.itemData(i))
+                for i in range(1, self._sink_combo.count())
+            ]
+            if self._sink_combo.count() == 0 or current != desired:
+                self._sink_combo.clear()
+                self._sink_combo.addItem("Automático (salida predeterminada)", "auto")
+                for desc, name in desired:
+                    self._sink_combo.addItem(desc, name)
             idx = self._sink_combo.findData(self._config.output_sink)
             self._sink_combo.setCurrentIndex(idx if idx >= 0 else 0)
-
-            active: AudioSinkInfo | None = get_active_sink_info()
-            if active is not None:
-                self._active_sink_name = active.name
-                self._master_muted = active.muted
-                self._vol_slider.setValue(max(0, min(130, active.volume_pct)))
-                self._vol_lbl.setText(f"{active.volume_pct}%")
-                self._btn_mute.setChecked(active.muted)
-                self._btn_mute.setText("🔇" if active.muted else "🔊")
         finally:
             self._syncing = False
+        self._sync_master_volume_only()
 
-    def refresh_app_streams(self) -> None:
-        while self._apps_container.count():
-            item = self._apps_container.takeAt(0)
-            w = item.widget()
-            if w is not None:
-                w.deleteLater()
-
-        streams: list[AudioAppStream] = list_sink_inputs()
+    def refresh_app_streams(self, streams_override: list[AudioAppStream] | None = None) -> None:
+        streams: list[AudioAppStream] = (
+            list_sink_inputs() if streams_override is None else list(streams_override)
+        )
         if not streams:
-            empty = QLabel("No hay aplicaciones reproduciendo audio en este momento.")
-            empty.setObjectName("MutedNote")
-            self._apps_container.addWidget(empty)
+            for row_w, *_ in self._app_rows.values():
+                self._apps_container.removeWidget(row_w)
+                row_w.deleteLater()
+            self._app_rows.clear()
+            self._app_last_drag.clear()
+            if self._empty_apps_lbl is None:
+                self._empty_apps_lbl = QLabel(
+                    "No hay aplicaciones reproduciendo audio en este momento."
+                )
+                self._empty_apps_lbl.setObjectName("MutedNote")
+                self._apps_container.addWidget(self._empty_apps_lbl)
             return
 
+        if self._empty_apps_lbl is not None:
+            self._apps_container.removeWidget(self._empty_apps_lbl)
+            self._empty_apps_lbl.deleteLater()
+            self._empty_apps_lbl = None
+
+        live_ids = {st.index for st in streams}
+        for stale_id in [k for k in self._app_rows if k not in live_ids]:
+            row_w, *_ = self._app_rows.pop(stale_id)
+            self._app_last_drag.pop(stale_id, None)
+            self._apps_container.removeWidget(row_w)
+            row_w.deleteLater()
+
+        now = time.monotonic()
         for st in streams:
+            if st.index in self._app_rows:
+                _row_w, btn_m, name_lbl, sl, pct_lbl = self._app_rows[st.index]
+                if name_lbl.text() != st.name:
+                    name_lbl.setText(st.name)
+                btn_m.blockSignals(True)
+                try:
+                    btn_m.setChecked(st.muted)
+                    btn_m.setText("🔇" if st.muted else "🔊")
+                finally:
+                    btn_m.blockSignals(False)
+                if not sl.isSliderDown() and (
+                    now - self._app_last_drag.get(st.index, 0.0) >= 0.45
+                ):
+                    sl.blockSignals(True)
+                    try:
+                        sl.setValue(max(0, min(130, st.volume_pct)))
+                        pct_lbl.setText(f"{st.volume_pct}%")
+                    finally:
+                        sl.blockSignals(False)
+                continue
+
             row_w = QWidget()
             r_lay = QHBoxLayout(row_w)
             r_lay.setContentsMargins(0, 2, 0, 2)
@@ -762,6 +920,7 @@ class EqTabWidget(QWidget):
             pct_lbl.setStyleSheet("font-family: 'JetBrains Mono', monospace; color: #94A3B8;")
 
             def _on_app_vol(val: int, idx: int = st.index, lbl: QLabel = pct_lbl) -> None:
+                self._app_last_drag[idx] = time.monotonic()
                 lbl.setText(f"{val}%")
                 if self._start_background:
                     set_sink_input_volume(idx, val)
@@ -779,6 +938,7 @@ class EqTabWidget(QWidget):
             r_lay.addWidget(sl, 1)
             r_lay.addWidget(pct_lbl)
             self._apps_container.addWidget(row_w)
+            self._app_rows[st.index] = (row_w, btn_m, name_lbl, sl, pct_lbl)
 
     def _schedule_live_update(self) -> None:
         if self._start_background and self._config.enabled:

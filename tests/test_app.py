@@ -1357,6 +1357,35 @@ class EqualizerSubsystemTests(unittest.TestCase):
                 eq_tab._bal_slider.reset_requested.emit()
                 self.assertEqual(eq_tab._bal_lbl.text(), "Centro")
 
+                # Non-disruptive in-place app mixer auto-refresh
+                from antidrift.audio.eq_backend import AudioAppStream
+
+                eq_tab.refresh_app_streams([
+                    AudioAppStream(index=22, name="Spotify", app_binary="spotify", sink_id="68", volume_pct=16, muted=False)
+                ])
+                self.assertIn(22, eq_tab._app_rows)
+                sl_spot = eq_tab._app_rows[22][3]
+                self.assertEqual(sl_spot.value(), 16)
+
+                # External update updates slider in-place without recreating widget
+                eq_tab.refresh_app_streams([
+                    AudioAppStream(index=22, name="Spotify", app_binary="spotify", sink_id="68", volume_pct=48, muted=False),
+                    AudioAppStream(index=30, name="Discord", app_binary="Discord", sink_id="68", volume_pct=90, muted=False),
+                ])
+                self.assertIs(eq_tab._app_rows[22][3], sl_spot)
+                self.assertEqual(sl_spot.value(), 48)
+                self.assertIn(30, eq_tab._app_rows)
+
+                # While user is actively dragging slider, external refresh does not yank it
+                sl_spot.setSliderDown(True)
+                sl_spot.setValue(60)
+                eq_tab.refresh_app_streams([
+                    AudioAppStream(index=22, name="Spotify", app_binary="spotify", sink_id="68", volume_pct=20, muted=False),
+                ])
+                self.assertEqual(sl_spot.value(), 60)
+                self.assertNotIn(30, eq_tab._app_rows)
+                sl_spot.setSliderDown(False)
+
                 # Render tab cleanly offscreen
                 img = QImage(QSize(1180, 770), QImage.Format_ARGB32)
                 win.render(img)
