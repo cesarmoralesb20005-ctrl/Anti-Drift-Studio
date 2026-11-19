@@ -1144,5 +1144,230 @@ class UpdaterTests(unittest.TestCase):
             self.assertIn('version = "1.1.0"', (client / "pyproject.toml").read_text(encoding="utf-8"))
 
 
+class EqualizerSubsystemTests(unittest.TestCase):
+    def test_eq_config_math_presets_and_roundtrip(self) -> None:
+        from antidrift.audio.eq_config import (
+            EQ_BAND_FREQS,
+            EQ_PRESETS,
+            EqualizerConfig,
+            biquad_coefficients,
+            compute_eq_curve_db,
+            effective_preamp_db,
+            load_eq_config,
+            save_eq_config,
+        )
+
+        flat_curve = compute_eq_curve_db([0.0] * 10, 0.0, False, freqs_hz=[31.0, 1000.0, 16000.0])
+        self.assertEqual(flat_curve, [0.0, 0.0, 0.0])
+
+        fps_bands = list(EQ_PRESETS["Gaming / Pasos FPS"]["bands"])
+        self.assertEqual(effective_preamp_db(fps_bands, 0.0, True), -5.5)
+        self.assertEqual(effective_preamp_db(fps_bands, 2.0, False), 2.0)
+        self.assertEqual(effective_preamp_db(fps_bands, 2.0, True, bypass=True), 0.0)
+
+        bass_bands = list(EQ_PRESETS["Graves Potentes"]["bands"])
+        bass_curve = compute_eq_curve_db(bass_bands, 0.0, False, freqs_hz=[31.0, 1000.0, 16000.0])
+        self.assertGreater(bass_curve[0], 4.0)
+        self.assertGreater(bass_curve[0], bass_curve[1])
+        self.assertEqual(
+            compute_eq_curve_db(bass_bands, 0.0, False, freqs_hz=[31.0, 1000.0], bypass=True),
+            [0.0, 0.0],
+        )
+
+        # Unity coefficients when gain is zero
+        self.assertEqual(biquad_coefficients("peaking", 1000.0, 1.4, 0.0), (1.0, 0.0, 0.0, 1.0, 0.0, 0.0))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "eq.json"
+            cfg = EqualizerConfig(
+                enabled=True,
+                bypass=False,
+                output_sink="alsa_output.pci-0000_07_00.6.analog-stereo",
+                preamp_db=1.5,
+                auto_preamp=True,
+                balance=-0.35,
+                band_gains=[3.5, 2.0, 0.0, -1.5, 0.0, 1.0, 2.5, 4.0, 2.0, 1.5],
+                active_preset="Mi EQ",
+                custom_presets={"Mi EQ": {"preamp_db": 1.5, "bands": [3.5] + [0.0] * 9}},
+                previous_default_sink="alsa_output.pci-0000_07_00.6.analog-stereo",
+            )
+            save_eq_config(cfg, p)
+            loaded = load_eq_config(p)
+            self.assertTrue(loaded.enabled)
+            self.assertEqual(len(loaded.band_gains), len(EQ_BAND_FREQS))
+            self.assertEqual(loaded.balance, -0.35)
+            self.assertIn("Mi EQ", loaded.custom_presets)
+
+    def test_eq_pipewire_backend_and_mixer(self) -> None:
+        import json
+        from unittest import mock
+        from antidrift.audio.eq_backend import (
+            EQ_PLAYBACK_NAME,
+            EQ_SINK_NAME,
+            apply_eq_live_params,
+            generate_pipewire_eq_conf,
+            list_physical_sinks,
+            list_sink_inputs,
+            set_sink_volume_and_balance,
+        )
+        from antidrift.audio.eq_config import EqualizerConfig
+
+        cfg = EqualizerConfig(
+            enabled=True,
+            preamp_db=0.0,
+            auto_preamp=True,
+            band_gains=[4.0, 2.0, 0.0, 0.0, 0.0, 0.0, 1.0, 3.0, 2.0, 0.0],
+        )
+        conf_txt = generate_pipewire_eq_conf(cfg, "alsa_output.test")
+        self.assertIn("libpipewire-module-filter-chain", conf_txt)
+        self.assertIn('label = bq_lowshelf', conf_txt)
+        self.assertIn('label = bq_peaking', conf_txt)
+        self.assertIn('label = bq_highshelf', conf_txt)
+        self.assertIn(f'node.name        = "{EQ_SINK_NAME}"', conf_txt)
+        self.assertIn('target.object = "alsa_output.test"', conf_txt)
+        self.assertIn('label = bq_lowshelf control = { "Freq" = 31.0 "Q" = 0.707 "Gain" = 4.00 }', conf_txt)
+        # Auto preamp = -4.0 dB => Mult ~ 0.630957
+        self.assertIn('"Mult" = 0.630957', conf_txt)
+
+        # Bypass zeroes gains & preamp multiplier cleanly
+        cfg_bp = cfg.copy()
+        cfg_bp.bypass = True
+        bp_txt = generate_pipewire_eq_conf(cfg_bp, "alsa_output.test")
+        self.assertIn('"Mult" = 1.000000', bp_txt)
+        self.assertIn('"Gain" = 0.00', bp_txt)
+
+        fake_sinks_json = json.dumps([
+            {
+                "name": EQ_SINK_NAME,
+                "description": "Anti-Drift Studio EQ",
+                "mute": False,
+                "volume": {"front-left": {"value_percent": "100%"}},
+                "balance": 0.0,
+                "properties": {"device.description": "Anti-Drift Studio EQ"},
+                "ports": [],
+            },
+            {
+                "name": "alsa_output.test_hw",
+                "description": "(null)",
+                "mute": False,
+                "volume": {"front-left": {"value_percent": "80%"}, "front-right": {"value_percent": "80%"}},
+                "balance": 0.0,
+                "properties": {"device.description": "Ryzen HD Audio"},
+                "active_port": "analog-output-headphones",
+                "ports": [{"name": "analog-output-headphones", "description": "Auriculares"}],
+            },
+        ])
+        fake_inputs_json = json.dumps([
+            {
+                "index": 10,
+                "sink": 1,
+                "mute": False,
+                "volume": {"front-left": {"value_percent": "100%"}},
+                "properties": {"node.name": EQ_PLAYBACK_NAME, "media.name": "Anti-Drift Studio EQ"},
+            },
+            {
+                "index": 22,
+                "sink": 1,
+                "mute": False,
+                "volume": {"front-left": {"value_percent": "72%"}},
+                "properties": {"application.name": "Spotify", "application.process.binary": "spotify"},
+            },
+        ])
+
+        def _fake_run(args, timeout=4.0):
+            if args == ["pactl", "get-default-sink"]:
+                return 0, "alsa_output.test_hw", ""
+            if args == ["pactl", "-f", "json", "list", "sinks"]:
+                return 0, fake_sinks_json, ""
+            if args == ["pactl", "-f", "json", "list", "sink-inputs"]:
+                return 0, fake_inputs_json, ""
+            return 0, "", ""
+
+        with mock.patch("antidrift.audio.eq_backend._run", side_effect=_fake_run):
+            phys = list_physical_sinks()
+            self.assertEqual(len(phys), 1)
+            self.assertEqual(phys[0].name, "alsa_output.test_hw")
+            self.assertEqual(phys[0].description, "Ryzen HD Audio · Auriculares")
+            self.assertEqual(phys[0].volume_pct, 80)
+
+            streams = list_sink_inputs()
+            self.assertEqual(len(streams), 1)
+            self.assertEqual(streams[0].index, 22)
+            self.assertEqual(streams[0].name, "Spotify")
+
+        calls: list[list[str]] = []
+        with mock.patch(
+            "antidrift.audio.eq_backend._run",
+            side_effect=lambda a, timeout=4.0: (calls.append(a) or (0, "", "")),
+        ):
+            set_sink_volume_and_balance("sink_x", 100, -0.5)
+            set_sink_volume_and_balance("sink_x", 80, 0.5)
+        self.assertEqual(calls[0], ["pactl", "set-sink-volume", "sink_x", "100%", "50%"])
+        self.assertEqual(calls[1], ["pactl", "set-sink-volume", "sink_x", "40%", "80%"])
+
+        pw_calls: list[list[str]] = []
+        pw_dump_out = json.dumps([
+            {"id": 99, "type": "PipeWire:Interface:Node", "info": {"props": {"node.name": EQ_SINK_NAME}}}
+        ])
+
+        def _fake_pw(args, timeout=4.0):
+            pw_calls.append(args)
+            if args == ["pw-dump"]:
+                return 0, pw_dump_out, ""
+            return 0, "", ""
+
+        with mock.patch("antidrift.audio.eq_backend._run", side_effect=_fake_pw):
+            ok_live = apply_eq_live_params(cfg)
+        self.assertTrue(ok_live)
+        self.assertEqual(pw_calls[-1][:4], ["pw-cli", "s", "99", "Props"])
+        self.assertIn('"b1:Gain" 4.00', pw_calls[-1][4])
+
+    def test_eq_tab_ui_and_main_window_integration(self) -> None:
+        from PySide6.QtCore import QSize
+        from PySide6.QtGui import QImage
+        from PySide6.QtWidgets import QApplication
+        from antidrift.main_window import MainWindow
+
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as tmp:
+            old_xdg = os.environ.get("XDG_CONFIG_HOME")
+            os.environ["XDG_CONFIG_HOME"] = tmp
+            try:
+                win = MainWindow(start_reader=False, enable_tray=False)
+                win.resize(1180, 770)
+                win._main_tabs.setCurrentIndex(win._eq_tab_idx)
+                app.processEvents()
+
+                eq_tab = win._eq_tab
+                eq_tab._apply_preset_by_name("Graves Potentes")
+                self.assertEqual(eq_tab._config.active_preset, "Graves Potentes")
+                self.assertEqual(eq_tab._band_sliders[0].value(), 65)
+                self.assertEqual(eq_tab._preamp_lbl.text(), "-6.5")
+
+                # Manual band change updates preset to Personalizado and reset restores 0.0 dB
+                eq_tab._band_sliders[2].setValue(55)
+                self.assertEqual(eq_tab._config.band_gains[2], 5.5)
+                self.assertEqual(eq_tab._config.active_preset, "Personalizado")
+                eq_tab._band_sliders[2].reset_requested.emit()
+                self.assertEqual(eq_tab._config.band_gains[2], 0.0)
+
+                # Balance readout
+                eq_tab._bal_slider.setValue(-40)
+                self.assertEqual(eq_tab._bal_lbl.text(), "I 40%")
+                eq_tab._bal_slider.reset_requested.emit()
+                self.assertEqual(eq_tab._bal_lbl.text(), "Centro")
+
+                # Render tab cleanly offscreen
+                img = QImage(QSize(1180, 770), QImage.Format_ARGB32)
+                win.render(img)
+                self.assertFalse(img.isNull())
+                win.close()
+            finally:
+                if old_xdg is None:
+                    os.environ.pop("XDG_CONFIG_HOME", None)
+                else:
+                    os.environ["XDG_CONFIG_HOME"] = old_xdg
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

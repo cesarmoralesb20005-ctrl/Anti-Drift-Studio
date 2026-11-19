@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .audio.eq_tab import EqTabWidget
 from .clips.clips_tab import ClipsTabWidget
 from .clips.desktop_notifier import DesktopClipNotifier
 from .config import (
@@ -284,8 +285,8 @@ QTabBar::tab {
     color: #94A3B8;
     border: 1px solid #1E2630;
     border-radius: 6px;
-    padding: 7px 14px;
-    margin-right: 6px;
+    padding: 7px 11px;
+    margin-right: 4px;
     font-weight: 600;
 }
 QTabBar::tab:hover {
@@ -349,6 +350,27 @@ QSlider::handle:horizontal {
 }
 QSlider::sub-page:horizontal {
     background: #059669;
+    border-radius: 2px;
+}
+QSlider::groove:vertical {
+    width: 5px;
+    background: #1E2630;
+    border-radius: 2px;
+}
+QSlider::handle:vertical {
+    background: #F8FAFC;
+    border: 2px solid #059669;
+    width: 14px;
+    height: 12px;
+    margin: 0 -5px;
+    border-radius: 6px;
+}
+QSlider::add-page:vertical {
+    background: #059669;
+    border-radius: 2px;
+}
+QSlider::sub-page:vertical {
+    background: #1E2630;
     border-radius: 2px;
 }
 QProgressBar {
@@ -533,6 +555,8 @@ class MainWindow(QMainWindow):
         self._profile_watch_timer.stop()
         if self._notifier is not None:
             self._notifier.stop()
+        if hasattr(self, "_eq_tab"):
+            self._eq_tab.shutdown()
         if hasattr(self, "_clips_tab"):
             self._clips_tab.shutdown()
         if hasattr(self, "_macros_tab"):
@@ -794,15 +818,26 @@ class MainWindow(QMainWindow):
         self._macros_tab.preview_state_changed.connect(self._on_macro_preview_state)
         if self._reader is not None:
             self._reader.raw_key_detected.connect(self._macros_tab.on_raw_key_detected)
-        tabs.addTab(self._macros_tab, "Botones Extra y Macros")
+        tabs.addTab(self._macros_tab, "Macros")
         self._clips_tab = ClipsTabWidget(start_background=self._start_reader)
         self._clips_tab.clip_notification.connect(self._on_clip_notification)
         tabs.addTab(self._clips_tab, "Clips y Momentos")
         clips_idx = tabs.indexOf(self._clips_tab)
+        self._eq_tab = EqTabWidget(start_background=self._start_reader)
+        tabs.addTab(self._eq_tab, "Sonido y EQ")
+        eq_idx = tabs.indexOf(self._eq_tab)
         tabs.addTab(self._build_settings_tab(), "Ajustes")
-        tabs.currentChanged.connect(lambda idx: prof_bar.setVisible(idx != clips_idx))
+
+        def _on_tab_changed(idx: int) -> None:
+            prof_bar.setVisible(idx not in (clips_idx, eq_idx))
+            if idx == eq_idx and self._start_reader:
+                self._eq_tab.refresh_audio_devices()
+                self._eq_tab.refresh_app_streams()
+
+        tabs.currentChanged.connect(_on_tab_changed)
         self._main_tabs = tabs
         self._clips_tab_idx = clips_idx
+        self._eq_tab_idx = eq_idx
         w_lay.addWidget(tabs, 1)
         return wrapper
 
