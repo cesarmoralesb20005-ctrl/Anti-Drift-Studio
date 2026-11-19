@@ -556,6 +556,46 @@ def _stop_fallback_pid() -> None:
         pass
 
 
+def _unload_ladspa_eq_modules() -> None:
+    rc, out, _ = _run(["pactl", "list", "short", "modules"])
+    if rc != 0:
+        return
+    for line in out.splitlines():
+        if "module-ladspa-sink" in line and EQ_SINK_NAME in line:
+            mod_id = line.split("\t", 1)[0].strip()
+            if mod_id.isdigit():
+                _run(["pactl", "unload-module", mod_id])
+
+
+def _has_ladspa_mbeq() -> bool:
+    for base in ("/usr/lib/ladspa", "/usr/lib64/ladspa", "/usr/lib/x86_64-linux-gnu/ladspa"):
+        if (Path(base) / "mbeq_1197.so").exists():
+            return True
+    return False
+
+
+def _bands_10_to_mbeq15(gains: list[float]) -> list[float]:
+    # mbeq_1197 centers: 50,100,156,220,311,440,622,880,1250,1750,2500,3500,5000,10000,20000 Hz
+    g = [float(x) for x in gains] + [0.0] * max(0, 10 - len(gains))
+    return [
+        round((g[0] + g[1]) * 0.5, 2),
+        round((g[1] + g[2]) * 0.5, 2),
+        round(g[2], 2),
+        round(g[3], 2),
+        round((g[3] + g[4]) * 0.5, 2),
+        round(g[4], 2),
+        round((g[4] + g[5]) * 0.5, 2),
+        round(g[5], 2),
+        round((g[5] + g[6]) * 0.5, 2),
+        round(g[6], 2),
+        round((g[6] + g[7]) * 0.5, 2),
+        round(g[7], 2),
+        round((g[7] + g[8]) * 0.5, 2),
+        round(g[8], 2),
+        round(g[9], 2),
+    ]
+
+
 def start_or_update_eq(cfg: EqualizerConfig) -> EqBackendStatus:
     """Start, update live, or stop the system-wide equalizer cleanly."""
     if not shutil.which("pactl"):
@@ -575,6 +615,7 @@ def start_or_update_eq(cfg: EqualizerConfig) -> EqBackendStatus:
         if EQ_SERVICE_PATH.exists():
             _run(["systemctl", "--user", "disable", "--now", EQ_SERVICE_NAME], timeout=6.0)
         _stop_fallback_pid()
+        _unload_ladspa_eq_modules()
         return EqBackendStatus(
             active=False,
             backend="pipewire" if is_pipewire_session() else "pulseaudio",
@@ -599,12 +640,38 @@ def start_or_update_eq(cfg: EqualizerConfig) -> EqBackendStatus:
 
     pipewire_bin = shutil.which("pipewire")
     if not pipewire_bin or not is_pipewire_session():
+        if _has_ladspa_mbeq():
+            _unload_ladspa_eq_modules()
+            ctrls = [0.0] * 15 if cfg.bypass else _bands_10_to_mbeq15(cfg.band_gains)
+            ctrl_str = ",".join(f"{v:.2f}" for v in ctrls)
+            rc, _, _ = _run(
+                [
+                    "pactl",
+                    "load-module",
+                    "module-ladspa-sink",
+                    f"sink_name={EQ_SINK_NAME}",
+                    f"master={target_sink}",
+                    "plugin=mbeq_1197",
+                    "label=mbeq",
+                    f"control={ctrl_str}",
+                ]
+            )
+            if rc == 0 and eq_sink_exists():
+                _run(["pactl", "set-default-sink", EQ_SINK_NAME])
+                move_all_streams_to_sink(EQ_SINK_NAME)
+                return EqBackendStatus(
+                    active=True,
+                    backend="pulseaudio",
+                    sink_name=EQ_SINK_NAME,
+                    target_sink=target_sink,
+                    message=f"Ecualizador Activo · PulseAudio LADSPA -> {target_sink}",
+                )
         return EqBackendStatus(
             active=False,
             backend="unavailable",
             sink_name="",
             target_sink=target_sink,
-            message="Se requiere PipeWire activo para el ecualizador del sistema.",
+            message="Se requiere PipeWire activo (o PulseAudio + swh-plugins) para el ecualizador.",
         )
 
     EQ_DIR.mkdir(parents=True, exist_ok=True)

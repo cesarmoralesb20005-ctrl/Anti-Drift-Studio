@@ -2049,10 +2049,10 @@ class MainWindow(QMainWindow):
     ) -> None:
         if activation_token:
             os.environ["XDG_ACTIVATION_TOKEN"] = activation_token
-        if self.isMinimized():
-            self.showNormal()
-        else:
-            self.show()
+        self.setWindowState(
+            (self.windowState() & ~Qt.WindowMinimized) | Qt.WindowActive
+        )
+        self.show()
         self.raise_()
         self.activateWindow()
         if hasattr(self, "_main_tabs") and hasattr(self, "_clips_tab_idx"):

@@ -1339,6 +1339,50 @@ class EqualizerSubsystemTests(unittest.TestCase):
         self.assertEqual(pw_calls[-1][:4], ["pw-cli", "s", "99", "Props"])
         self.assertIn('"b1:Gain" 4.00', pw_calls[-1][4])
 
+        # Verify EQ monitor is treated as virtual (prevents clip echo on Wayland & X11)
+        from antidrift.clips.recorder import is_virtual_audio_monitor
+        from antidrift.clips.hotkey_listener import GlobalHotkeyThread
+        from antidrift.audio.eq_backend import _bands_10_to_mbeq15, start_or_update_eq
+
+        self.assertTrue(is_virtual_audio_monitor(f"{EQ_SINK_NAME}.monitor"))
+        self.assertEqual(len(_bands_10_to_mbeq15(cfg.band_gains)), 15)
+
+        # Verify PulseAudio LADSPA fallback on legacy X11 sessions without PipeWire
+        pa_cmds: list[list[str]] = []
+
+        def _fake_pa_run(args, timeout=4.0):
+            pa_cmds.append(args)
+            if args == ["pactl", "list", "short", "sinks"]:
+                return 0, f"1\t{EQ_SINK_NAME}\tmodule-ladspa-sink\tfloat32le\tRUNNING\n", ""
+            return 0, "", ""
+
+        with (
+            mock.patch("antidrift.audio.eq_backend._run", side_effect=_fake_pa_run),
+            mock.patch("antidrift.audio.eq_backend.shutil.which", side_effect=lambda b: "/usr/bin/pactl" if b == "pactl" else None),
+            mock.patch("antidrift.audio.eq_backend.is_pipewire_session", return_value=False),
+            mock.patch("antidrift.audio.eq_backend._has_ladspa_mbeq", return_value=True),
+            mock.patch("antidrift.audio.eq_backend.resolve_target_sink", return_value="alsa_output.test_hw"),
+            mock.patch("antidrift.audio.eq_backend.eq_sink_exists", return_value=True),
+        ):
+            pa_st = start_or_update_eq(cfg)
+        self.assertTrue(pa_st.active)
+        self.assertEqual(pa_st.backend, "pulseaudio")
+        self.assertTrue(any("module-ladspa-sink" in c for c in pa_cmds))
+
+        # Verify GlobalHotkeyThread pure-X11 (non-KDE X11) triggers XQueryKeymap primary
+        x11_direct: list[bool] = []
+        th_x11 = GlobalHotkeyThread("Alt+Shift+C")
+        with (
+            mock.patch.dict(os.environ, {"DISPLAY": ":0", "XDG_SESSION_TYPE": "x11", "WAYLAND_DISPLAY": ""}, clear=False),
+            mock.patch.object(th_x11, "_run_ipc_server", return_value=None),
+            mock.patch.object(th_x11, "_readable_keyboards", return_value=[]),
+            mock.patch.object(th_x11, "_kde_kglobalaccel_available", return_value=False),
+            mock.patch.object(th_x11, "_run_kde_globalaccel_loop", return_value=False),
+            mock.patch.object(th_x11, "_run_x11_loop", side_effect=lambda emit_status=True: x11_direct.append(emit_status) or True),
+        ):
+            th_x11.run()
+        self.assertEqual(x11_direct, [True])
+
     def test_eq_tab_ui_and_main_window_integration(self) -> None:
         from PySide6.QtCore import QSize
         from PySide6.QtGui import QImage
