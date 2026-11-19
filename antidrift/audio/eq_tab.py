@@ -53,6 +53,7 @@ from .eq_config import (
     EQ_PRESETS,
     EqualizerConfig,
     compute_eq_curve_db,
+    compute_stereo_dsp_params,
     effective_preamp_db,
     load_eq_config,
     save_eq_config,
@@ -695,7 +696,76 @@ class EqTabWidget(QWidget):
         e_lay.addLayout(faders_row)
         lay.addWidget(eq_card)
 
-        # ── Card 3: Per-Application Mixer ──
+        # ── Card 3: Stereo Amplification Engine (Mid/Side + 250Hz Mono + Exciter + Haas) ──
+        st_card = QFrame()
+        st_card.setObjectName("Card")
+        s_lay = QVBoxLayout(st_card)
+        s_lay.setContentsMargins(12, 10, 12, 10)
+        s_lay.setSpacing(8)
+
+        s_hdr = QHBoxLayout()
+        s_hdr.setSpacing(8)
+        s_title = QLabel("Amplificación Estéreo (Mid/Side + Haas)")
+        s_title.setObjectName("SectionTitle")
+        s_hdr.addWidget(s_title)
+        s_hdr.addStretch(1)
+
+        self._btn_stereo = QPushButton("Estéreo: APAGADO")
+        self._btn_stereo.setCheckable(True)
+        self._btn_stereo.setObjectName("ProtectToggleOff")
+        self._btn_stereo.toggled.connect(self._on_stereo_enabled_toggled)
+        s_hdr.addWidget(self._btn_stereo)
+        s_lay.addLayout(s_hdr)
+
+        st_desc = QLabel(
+            "Amplía el escenario estéreo extrayendo el canal lateral (>250 Hz para mantener graves limpios), "
+            "excitador de agudos y micro-retardo Haas."
+        )
+        st_desc.setObjectName("MutedNote")
+        st_desc.setWordWrap(True)
+        s_lay.addWidget(st_desc)
+
+        st_sl_row = QHBoxLayout()
+        st_sl_row.setSpacing(8)
+        lbl_subtle = QLabel("Sutil")
+        lbl_subtle.setObjectName("MutedNote")
+        st_sl_row.addWidget(lbl_subtle)
+
+        self._stereo_slider = _DoubleClickResetSlider(Qt.Horizontal)
+        self._stereo_slider.setRange(0, 100)
+        self._stereo_slider.setSingleStep(5)
+        self._stereo_slider.setValue(50)
+        self._stereo_slider.setToolTip(
+            "Intensidad de ampliación estéreo (doble clic para volver a 50%)"
+        )
+        self._stereo_slider.valueChanged.connect(self._on_stereo_width_changed)
+        self._stereo_slider.reset_requested.connect(lambda: self._stereo_slider.setValue(50))
+        st_sl_row.addWidget(self._stereo_slider, 1)
+
+        lbl_wide = QLabel("Amplio")
+        lbl_wide.setObjectName("MutedNote")
+        st_sl_row.addWidget(lbl_wide)
+
+        self._stereo_val_lbl = QLabel("50% · 10 ms")
+        self._stereo_val_lbl.setMinimumWidth(145)
+        self._stereo_val_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self._stereo_val_lbl.setStyleSheet(
+            "font-family: 'JetBrains Mono', monospace; font-weight: 700; color: #10B981;"
+        )
+        st_sl_row.addWidget(self._stereo_val_lbl)
+        s_lay.addLayout(st_sl_row)
+
+        st_pills = QHBoxLayout()
+        st_pills.setSpacing(6)
+        for pct, lbl in ((25, "Sutil 25%"), (50, "Equilibrado 50%"), (80, "Amplio 80%"), (100, "Máximo 100%")):
+            pb = QPushButton(lbl)
+            pb.setObjectName("MiniPill")
+            pb.clicked.connect(lambda _=False, v=pct: self._apply_stereo_quick_pct(v))
+            st_pills.addWidget(pb)
+        s_lay.addLayout(st_pills)
+        lay.addWidget(st_card)
+
+        # ── Card 4: Per-Application Mixer ──
         app_card = QFrame()
         app_card.setObjectName("Card")
         a_lay = QVBoxLayout(app_card)
@@ -733,10 +803,12 @@ class EqTabWidget(QWidget):
                     self._preset_combo.addItem(f"★ {cname}", cname)
             idx = self._preset_combo.findData(self._config.active_preset)
             if idx < 0:
-                self._preset_combo.addItem(
-                    f"Personalizado ({self._config.active_preset})",
-                    self._config.active_preset,
+                lbl = (
+                    "Personalizado"
+                    if self._config.active_preset == "Personalizado"
+                    else f"Personalizado ({self._config.active_preset})"
                 )
+                self._preset_combo.addItem(lbl, self._config.active_preset)
                 idx = self._preset_combo.count() - 1
             self._preset_combo.setCurrentIndex(idx)
             self._btn_del_pre.setEnabled(
@@ -757,6 +829,9 @@ class EqTabWidget(QWidget):
             self._preamp_slider.setValue(int(round(c.preamp_db * 10.0)))
             self._bal_slider.setValue(int(round(c.balance * 100.0)))
             self._update_balance_label(c.balance)
+            self._btn_stereo.setChecked(c.stereo_enabled)
+            self._stereo_slider.setValue(int(round(c.stereo_width * 100.0)))
+            self._update_stereo_ui_labels()
 
             for i, g in enumerate(c.band_gains):
                 self._band_sliders[i].setValue(int(round(g * 10.0)))
@@ -990,6 +1065,51 @@ class EqTabWidget(QWidget):
         self._update_preamp_label()
         self._update_curve()
         self._schedule_live_update()
+
+    def _update_stereo_ui_labels(self) -> None:
+        on = self._config.stereo_enabled
+        self._btn_stereo.setText("Estéreo: ACTIVO" if on else "Estéreo: APAGADO")
+        self._btn_stereo.setObjectName("ProtectToggleOn" if on else "ProtectToggleOff")
+        self._btn_stereo.style().unpolish(self._btn_stereo)
+        self._btn_stereo.style().polish(self._btn_stereo)
+
+        pct = int(round(self._config.stereo_width * 100.0))
+        st = compute_stereo_dsp_params(True, self._config.stereo_width, bypass=False)
+        self._stereo_val_lbl.setText(
+            f"{pct}% · {int(st['haas_delay_ms'])} ms · +{st['exciter_16k_db']:.1f} dB"
+        )
+
+    def _on_stereo_enabled_toggled(self, checked: bool) -> None:
+        if self._syncing:
+            return
+        self._config.stereo_enabled = bool(checked)
+        self._update_stereo_ui_labels()
+        if checked and not self._config.enabled:
+            self._config.enabled = True
+            self._syncing = True
+            try:
+                self._btn_enable.setChecked(True)
+                self._update_enable_button_style()
+                self._btn_bypass.setEnabled(True)
+                self._update_curve()
+            finally:
+                self._syncing = False
+            self._apply_backend_full()
+            return
+        self._schedule_live_update()
+
+    def _on_stereo_width_changed(self, val: int) -> None:
+        width = round(max(0.0, min(1.0, val / 100.0)), 2)
+        self._config.stereo_width = width
+        self._update_stereo_ui_labels()
+        if self._syncing:
+            return
+        self._schedule_live_update()
+
+    def _apply_stereo_quick_pct(self, pct: int) -> None:
+        self._stereo_slider.setValue(int(pct))
+        if not self._config.stereo_enabled:
+            self._btn_stereo.setChecked(True)
 
     def _on_output_sink_changed(self) -> None:
         if self._syncing:

@@ -5,10 +5,18 @@ from __future__ import annotations
 import cmath
 import json
 import math
+import os
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 
 DEFAULT_EQ_CONFIG_PATH = Path.home() / ".config" / "xbox-antidrift-eq.json"
+
+
+def default_eq_config_path() -> Path:
+    """Return active EQ config JSON path, honoring XDG_CONFIG_HOME if set."""
+    cfg_root = os.environ.get("XDG_CONFIG_HOME", "").strip()
+    base = Path(cfg_root) if cfg_root else (Path.home() / ".config")
+    return base / "xbox-antidrift-eq.json"
 
 EQ_BAND_FREQS: tuple[int, ...] = (31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000)
 EQ_BAND_LABELS: tuple[str, ...] = (
@@ -122,6 +130,8 @@ class EqualizerConfig:
     active_preset: str = "Plano (Neutro)"
     custom_presets: dict[str, dict[str, object]] = field(default_factory=dict)
     previous_default_sink: str = ""
+    stereo_enabled: bool = False
+    stereo_width: float = 0.5
 
     def copy(self) -> EqualizerConfig:
         return replace(
@@ -155,7 +165,47 @@ class EqualizerConfig:
             active_preset=(str(self.active_preset or "Personalizado").strip() or "Personalizado"),
             custom_presets=clean_custom,
             previous_default_sink=str(self.previous_default_sink or "").strip(),
+            stereo_enabled=bool(self.stereo_enabled),
+            stereo_width=round(max(0.0, min(1.0, float(self.stereo_width))), 2),
         )
+
+
+def compute_stereo_dsp_params(
+    enabled: bool, width: float, bypass: bool = False
+) -> dict[str, float]:
+    """Compute Mid/Side + 250 Hz mono bass + Treble Exciter + Haas delay parameters.
+
+    Mirrors musicb7's Stereo Amplification Engine:
+    - Keeps <250 Hz mono via high-pass filter on the Side channel.
+    - Scales Side gain (1.0 + width * 1.5), applies 2-25 ms Haas delay,
+      and excites upper treble bands (4k/8k/16k) on the Side channel.
+    - When disabled or bypassed, switches cleanly to bit-transparent raw Side passthrough.
+    """
+    w_clamped = max(0.0, min(1.0, float(width)))
+    if not enabled or bypass:
+        return {
+            "side_gain": 0.0,
+            "haas_gain": 0.0,
+            "raw_side_gain": 1.0,
+            "haas_delay_ms": 12.0,
+            "haas_delay_s": 0.012,
+            "exciter_4k_db": 0.0,
+            "exciter_8k_db": 0.0,
+            "exciter_16k_db": 0.0,
+        }
+    side_w = 1.0 + w_clamped * 1.5
+    delay_ms = float(int(max(2.0, min(25.0, w_clamped * 20.0))))
+    exc_boost = w_clamped * 10.0
+    return {
+        "side_gain": round(side_w, 4),
+        "haas_gain": round(side_w * w_clamped * 0.65, 4),
+        "raw_side_gain": 0.0,
+        "haas_delay_ms": delay_ms,
+        "haas_delay_s": round(delay_ms / 1000.0, 4),
+        "exciter_4k_db": round(exc_boost * 0.4, 2),
+        "exciter_8k_db": round(exc_boost * 0.7, 2),
+        "exciter_16k_db": round(exc_boost, 2),
+    }
 
 
 def effective_preamp_db(
@@ -252,12 +302,13 @@ def compute_eq_curve_db(
     return curve
 
 
-def load_eq_config(path: Path = DEFAULT_EQ_CONFIG_PATH) -> EqualizerConfig:
+def load_eq_config(path: Path | None = None) -> EqualizerConfig:
     """Load equalizer configuration from JSON or return flat defaults."""
-    if not path.exists():
+    target = path if path is not None else default_eq_config_path()
+    if not target.exists():
         return EqualizerConfig()
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(target.read_text(encoding="utf-8"))
         cfg = EqualizerConfig(
             enabled=bool(data.get("enabled", False)),
             bypass=bool(data.get("bypass", False)),
@@ -269,14 +320,17 @@ def load_eq_config(path: Path = DEFAULT_EQ_CONFIG_PATH) -> EqualizerConfig:
             active_preset=str(data.get("active_preset", "Plano (Neutro)")),
             custom_presets=data.get("custom_presets", {}) if isinstance(data.get("custom_presets"), dict) else {},
             previous_default_sink=str(data.get("previous_default_sink", "")),
+            stereo_enabled=bool(data.get("stereo_enabled", False)),
+            stereo_width=float(data.get("stereo_width", 0.5)),
         )
         return cfg.clamped()
     except (OSError, ValueError, TypeError):
         return EqualizerConfig()
 
 
-def save_eq_config(cfg: EqualizerConfig, path: Path = DEFAULT_EQ_CONFIG_PATH) -> None:
+def save_eq_config(cfg: EqualizerConfig, path: Path | None = None) -> None:
     """Persist equalizer configuration to UTF-8 JSON."""
+    target = path if path is not None else default_eq_config_path()
     clean = cfg.clamped()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(asdict(clean), indent=2, ensure_ascii=False), encoding="utf-8")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(asdict(clean), indent=2, ensure_ascii=False), encoding="utf-8")

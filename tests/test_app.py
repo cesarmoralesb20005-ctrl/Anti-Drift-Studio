@@ -1228,6 +1228,23 @@ class EqualizerSubsystemTests(unittest.TestCase):
         self.assertIn('label = bq_lowshelf control = { "Freq" = 31.0 "Q" = 0.707 "Gain" = 4.00 }', conf_txt)
         # Auto preamp = -4.0 dB => Mult ~ 0.630957
         self.assertIn('"Mult" = 0.630957', conf_txt)
+        # Stereo Mid/Side + Haas nodes present (off by default -> raw passthrough)
+        self.assertIn('name = st_haas label = delay config = { "max-delay" = 1 }', conf_txt)
+        self.assertIn('"Gain 1" = 0.0000 "Gain 2" = 0.0000 "Gain 3" = 1.0000', conf_txt)
+
+        from antidrift.audio.eq_config import compute_stereo_dsp_params
+
+        st_on = compute_stereo_dsp_params(True, 0.5, bypass=False)
+        self.assertEqual(st_on["side_gain"], 1.75)
+        self.assertEqual(st_on["haas_delay_ms"], 10.0)
+        self.assertEqual(st_on["raw_side_gain"], 0.0)
+        self.assertEqual(st_on["exciter_16k_db"], 5.0)
+        cfg_st = cfg.copy()
+        cfg_st.stereo_enabled = True
+        cfg_st.stereo_width = 0.5
+        st_txt = generate_pipewire_eq_conf(cfg_st, "alsa_output.test")
+        self.assertIn('"Gain 1" = 1.7500', st_txt)
+        self.assertIn('"Delay (s)" = 0.0100', st_txt)
 
         # Bypass zeroes gains & preamp multiplier cleanly
         cfg_bp = cfg.copy()
@@ -1356,6 +1373,15 @@ class EqualizerSubsystemTests(unittest.TestCase):
                 self.assertEqual(eq_tab._bal_lbl.text(), "I 40%")
                 eq_tab._bal_slider.reset_requested.emit()
                 self.assertEqual(eq_tab._bal_lbl.text(), "Centro")
+
+                # Stereo Amplification quick pill auto-enables both stereo and DSP
+                eq_tab._config.enabled = False
+                eq_tab._config.stereo_enabled = False
+                eq_tab._apply_stereo_quick_pct(80)
+                self.assertTrue(eq_tab._config.stereo_enabled)
+                self.assertTrue(eq_tab._config.enabled)
+                self.assertEqual(eq_tab._config.stereo_width, 0.8)
+                self.assertIn("80%", eq_tab._stereo_val_lbl.text())
 
                 # Non-disruptive in-place app mixer auto-refresh
                 from antidrift.audio.eq_backend import AudioAppStream

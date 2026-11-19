@@ -16,6 +16,7 @@ from .eq_config import (
     EQ_BAND_Q,
     EQ_BAND_TYPES,
     EqualizerConfig,
+    compute_stereo_dsp_params,
     effective_preamp_db,
 )
 
@@ -324,17 +325,53 @@ def move_all_streams_to_sink(target_sink: str) -> None:
 
 
 def generate_pipewire_eq_conf(cfg: EqualizerConfig, target_sink: str = "") -> str:
-    """Build standalone PipeWire filter-chain config for the 10-band equalizer."""
+    """Build PipeWire filter-chain config: Mid/Side + Haas Stereo Engine + 10-Band Dual EQ."""
     eff_pre = effective_preamp_db(
         cfg.band_gains, cfg.preamp_db, cfg.auto_preamp, bypass=cfg.bypass
     )
     mult = 1.0 if cfg.bypass else round(10.0 ** (eff_pre / 20.0), 6)
     gains = [0.0] * len(EQ_BAND_FREQS) if cfg.bypass else list(cfg.band_gains)
+    st = compute_stereo_dsp_params(cfg.stereo_enabled, cfg.stereo_width, bypass=cfg.bypass)
 
     nodes_lines = [
-        f'                    {{ type = builtin name = preamp label = linear control = {{ "Mult" = {mult:.6f} "Add" = 0.0 }} }}'
+        '                    { type = builtin name = inL label = copy }',
+        '                    { type = builtin name = inR label = copy }',
+        '                    { type = builtin name = st_mid label = mixer control = { "Gain 1" = 0.5 "Gain 2" = 0.5 } }',
+        '                    { type = builtin name = st_side_raw label = mixer control = { "Gain 1" = 0.5 "Gain 2" = -0.5 } }',
+        '                    { type = builtin name = st_hp label = bq_highpass control = { "Freq" = 250.0 "Q" = 0.707 } }',
+        f'                    {{ type = builtin name = st_exc_4k label = bq_peaking control = {{ "Freq" = 4000.0 "Q" = 1.410 "Gain" = {st["exciter_4k_db"]:.2f} }} }}',
+        f'                    {{ type = builtin name = st_exc_8k label = bq_peaking control = {{ "Freq" = 8000.0 "Q" = 1.410 "Gain" = {st["exciter_8k_db"]:.2f} }} }}',
+        f'                    {{ type = builtin name = st_exc_16k label = bq_highshelf control = {{ "Freq" = 16000.0 "Q" = 0.707 "Gain" = {st["exciter_16k_db"]:.2f} }} }}',
+        f'                    {{ type = builtin name = st_haas label = delay config = {{ "max-delay" = 1 }} control = {{ "Delay (s)" = {st["haas_delay_s"]:.4f} "Feedback" = 0.0 "Feedforward" = 0.0 }} }}',
+        f'                    {{ type = builtin name = st_side_blend label = mixer control = {{ "Gain 1" = {st["side_gain"]:.4f} "Gain 2" = {st["haas_gain"]:.4f} "Gain 3" = {st["raw_side_gain"]:.4f} }} }}',
+        '                    { type = builtin name = st_outL label = mixer control = { "Gain 1" = 1.0 "Gain 2" = 1.0 } }',
+        '                    { type = builtin name = st_outR label = mixer control = { "Gain 1" = 1.0 "Gain 2" = -1.0 } }',
+        f'                    {{ type = builtin name = preamp label = linear control = {{ "Mult" = {mult:.6f} "Add" = 0.0 }} }}',
+        f'                    {{ type = builtin name = preampR label = linear control = {{ "Mult" = {mult:.6f} "Add" = 0.0 }} }}',
     ]
-    links_lines = ['                    { output = "preamp:Out" input = "b1:In" }']
+
+    links_lines = [
+        '                    { output = "inL:Out" input = "st_mid:In 1" }',
+        '                    { output = "inR:Out" input = "st_mid:In 2" }',
+        '                    { output = "inL:Out" input = "st_side_raw:In 1" }',
+        '                    { output = "inR:Out" input = "st_side_raw:In 2" }',
+        '                    { output = "st_side_raw:Out" input = "st_hp:In" }',
+        '                    { output = "st_hp:Out" input = "st_exc_4k:In" }',
+        '                    { output = "st_exc_4k:Out" input = "st_exc_8k:In" }',
+        '                    { output = "st_exc_8k:Out" input = "st_exc_16k:In" }',
+        '                    { output = "st_exc_16k:Out" input = "st_haas:In" }',
+        '                    { output = "st_exc_16k:Out" input = "st_side_blend:In 1" }',
+        '                    { output = "st_haas:Out" input = "st_side_blend:In 2" }',
+        '                    { output = "st_side_raw:Out" input = "st_side_blend:In 3" }',
+        '                    { output = "st_mid:Out" input = "st_outL:In 1" }',
+        '                    { output = "st_side_blend:Out" input = "st_outL:In 2" }',
+        '                    { output = "st_mid:Out" input = "st_outR:In 1" }',
+        '                    { output = "st_side_blend:Out" input = "st_outR:In 2" }',
+        '                    { output = "st_outL:Out" input = "preamp:In" }',
+        '                    { output = "st_outR:Out" input = "preampR:In" }',
+        '                    { output = "preamp:Out" input = "b1:In" }',
+        '                    { output = "preampR:Out" input = "b1R:In" }',
+    ]
 
     for idx, (freq, ftype, q_val, gain) in enumerate(
         zip(EQ_BAND_FREQS, EQ_BAND_TYPES, EQ_BAND_Q, gains), start=1
@@ -343,9 +380,15 @@ def generate_pipewire_eq_conf(cfg: EqualizerConfig, target_sink: str = "") -> st
         nodes_lines.append(
             f'                    {{ type = builtin name = b{idx} label = {label} control = {{ "Freq" = {float(freq):.1f} "Q" = {q_val:.3f} "Gain" = {float(gain):.2f} }} }}'
         )
+        nodes_lines.append(
+            f'                    {{ type = builtin name = b{idx}R label = {label} control = {{ "Freq" = {float(freq):.1f} "Q" = {q_val:.3f} "Gain" = {float(gain):.2f} }} }}'
+        )
         if idx < len(EQ_BAND_FREQS):
             links_lines.append(
                 f'                    {{ output = "b{idx}:Out" input = "b{idx + 1}:In" }}'
+            )
+            links_lines.append(
+                f'                    {{ output = "b{idx}R:Out" input = "b{idx + 1}R:In" }}'
             )
 
     target_line = f'\n                target.object = "{target_sink}"' if target_sink else ""
@@ -372,6 +415,8 @@ def generate_pipewire_eq_conf(cfg: EqualizerConfig, target_sink: str = "") -> st
         "                links = [\n"
         + "\n".join(links_lines)
         + "\n                ]\n"
+        '                inputs  = [ "inL:In" "inR:In" ]\n'
+        '                outputs = [ "b10:Out" "b10R:Out" ]\n'
         "            }\n"
         "            audio.channels = 2\n"
         "            audio.position = [ FL FR ]\n"
@@ -392,7 +437,7 @@ def generate_pipewire_eq_conf(cfg: EqualizerConfig, target_sink: str = "") -> st
     )
 
 
-def _find_eq_pipewire_node_id() -> int | None:
+def _find_eq_pipewire_node() -> dict | None:
     rc, out, _ = _run(["pw-dump"])
     if rc != 0 or not out.strip().startswith("["):
         return None
@@ -405,8 +450,25 @@ def _find_eq_pipewire_node_id() -> int | None:
             continue
         props = (obj.get("info") or {}).get("props") or {}
         if props.get("node.name") == EQ_SINK_NAME:
-            return int(obj["id"])
+            return obj
     return None
+
+
+def _find_eq_pipewire_node_id() -> int | None:
+    obj = _find_eq_pipewire_node()
+    return int(obj["id"]) if obj is not None else None
+
+
+def _node_has_stereo_graph(obj: dict | None) -> bool:
+    if not isinstance(obj, dict):
+        return False
+    props_list = ((obj.get("info") or {}).get("params") or {}).get("Props") or []
+    for entry in props_list:
+        if isinstance(entry, dict):
+            params = entry.get("params") or []
+            if "st_side_blend:Gain 1" in params:
+                return True
+    return False
 
 
 def _find_eq_target_object() -> str:
@@ -427,7 +489,7 @@ def _find_eq_target_object() -> str:
 
 
 def apply_eq_live_params(cfg: EqualizerConfig) -> bool:
-    """Update preamp & all 10 EQ bands in real time with zero audio interruption."""
+    """Update stereo width/Haas/exciter, preamp, and all 10 EQ bands live."""
     nid = _find_eq_pipewire_node_id()
     if nid is None:
         return False
@@ -436,9 +498,23 @@ def apply_eq_live_params(cfg: EqualizerConfig) -> bool:
     )
     mult = 1.0 if cfg.bypass else round(10.0 ** (eff_pre / 20.0), 6)
     gains = [0.0] * len(EQ_BAND_FREQS) if cfg.bypass else list(cfg.band_gains)
-    tokens = [f'"preamp:Mult" {mult:.6f}']
+    st = compute_stereo_dsp_params(cfg.stereo_enabled, cfg.stereo_width, bypass=cfg.bypass)
+
+    tokens = [
+        f'"st_exc_4k:Gain" {st["exciter_4k_db"]:.2f}',
+        f'"st_exc_8k:Gain" {st["exciter_8k_db"]:.2f}',
+        f'"st_exc_16k:Gain" {st["exciter_16k_db"]:.2f}',
+        f'"st_haas:Delay (s)" {st["haas_delay_s"]:.4f}',
+        f'"st_side_blend:Gain 1" {st["side_gain"]:.4f}',
+        f'"st_side_blend:Gain 2" {st["haas_gain"]:.4f}',
+        f'"st_side_blend:Gain 3" {st["raw_side_gain"]:.4f}',
+        f'"preamp:Mult" {mult:.6f}',
+        f'"preampR:Mult" {mult:.6f}',
+    ]
     for idx, gain in enumerate(gains, start=1):
-        tokens.append(f'"b{idx}:Gain" {float(gain):.2f}')
+        g = float(gain)
+        tokens.append(f'"b{idx}:Gain" {g:.2f}')
+        tokens.append(f'"b{idx}R:Gain" {g:.2f}')
     pod = "{ params = [ " + " ".join(tokens) + " ] }"
     rc, _, _ = _run(["pw-cli", "s", str(nid), "Props", pod])
     return rc == 0
@@ -534,10 +610,15 @@ def start_or_update_eq(cfg: EqualizerConfig) -> EqBackendStatus:
     EQ_DIR.mkdir(parents=True, exist_ok=True)
     EQ_CONF_PATH.write_text(generate_pipewire_eq_conf(cfg, target_sink), encoding="utf-8")
 
-    already_up = eq_sink_exists()
+    eq_node = _find_eq_pipewire_node()
+    already_up = eq_node is not None and eq_sink_exists()
     cur_target = _find_eq_target_object() if already_up else ""
 
-    if already_up and (not target_sink or cur_target == target_sink):
+    if (
+        already_up
+        and _node_has_stereo_graph(eq_node)
+        and (not target_sink or cur_target == target_sink)
+    ):
         apply_eq_live_params(cfg)
     else:
         _stop_fallback_pid()
@@ -576,7 +657,11 @@ def start_or_update_eq(cfg: EqualizerConfig) -> EqBackendStatus:
     _run(["pactl", "set-default-sink", EQ_SINK_NAME])
     move_all_streams_to_sink(EQ_SINK_NAME)
     apply_eq_live_params(cfg)
-    mode_tag = "Bypass A/B" if cfg.bypass else "Activo"
+    mode_tag = (
+        "Bypass A/B"
+        if cfg.bypass
+        else ("Activo + Estéreo" if cfg.stereo_enabled else "Activo")
+    )
     return EqBackendStatus(
         active=True,
         backend="pipewire",
