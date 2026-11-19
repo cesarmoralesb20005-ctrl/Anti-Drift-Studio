@@ -38,8 +38,12 @@ from ..evdev_reader import ControllerState
 from ..widgets.fit_scroll import FitWidthScrollArea, FrameVideoCanvas
 from .clips_config import (
     ClipsConfig,
+    controller_shortcut_matches,
+    extract_pressed_pad_tokens,
+    format_controller_shortcut_label,
     is_tty_hotkey,
     load_clips_config,
+    normalize_controller_shortcut,
     save_clips_config,
 )
 from .hotkey_listener import GlobalHotkeyThread
@@ -78,7 +82,7 @@ def _format_ms(ms: int) -> str:
 class ClipsTabWidget(QWidget):
     """Streamlined Instant Replay clips studio with voice, keyboard & pad triggers."""
 
-    clip_notification = Signal(str, str)  # title, message
+    clip_notification = Signal(str, str, str)  # title, message, clip_path
 
     def __init__(self, start_background: bool = True, parent=None) -> None:
         super().__init__(parent)
@@ -87,6 +91,9 @@ class ClipsTabWidget(QWidget):
         self._auto_selecting_saved = False
         self._last_ctrl_combo_fire = 0.0
         self._last_save_fire = 0.0
+        self._capturing_pad = False
+        self._pad_capture_peak: set[str] = set()
+        self._pad_combo_was_down = False
         self._dl_thread: ModelDownloadThread | None = None
         self._log_tail: list[str] = []
 
@@ -130,29 +137,56 @@ class ClipsTabWidget(QWidget):
         self._recorder.stop_buffer(wait=True)
 
     def process_controller_state(self, state: ControllerState) -> None:
-        """Check controller chord/paddle shortcut to trigger clip save."""
-        if not self._recorder.is_running() or state.mode == "disconnected":
+        """Capture any controller button chord or trigger clip save when matched."""
+        if state.mode == "disconnected":
+            self._pad_combo_was_down = False
             return
+
+        if self._capturing_pad:
+            cur = set(extract_pressed_pad_tokens(state))
+            if cur:
+                self._pad_capture_peak |= cur
+                preview = format_controller_shortcut_label("+".join(self._pad_capture_peak))
+                self._hk_status_lbl.setText(
+                    f"Botones detectados: {preview} (suelta todos para guardar)"
+                )
+            elif self._pad_capture_peak:
+                combo = normalize_controller_shortcut("+".join(self._pad_capture_peak))
+                self._pad_capture_peak.clear()
+                self._capturing_pad = False
+                self._syncing = True
+                try:
+                    self._btn_capture_pad.setChecked(False)
+                    self._btn_capture_pad.setText("Capturar")
+                    self._set_pad_shortcut_combo(combo)
+                finally:
+                    self._syncing = False
+                self._config.controller_shortcut = combo
+                save_clips_config(self._config)
+                self._pad_combo_was_down = False
+                self._hk_status_lbl.setText(
+                    f"Atajo de mando guardado: {format_controller_shortcut_label(combo)}"
+                )
+            return
+
+        if not self._recorder.is_running():
+            self._pad_combo_was_down = False
+            return
+
         sc = self._config.controller_shortcut
         if sc == "none":
+            self._pad_combo_was_down = False
             return
-        triggered = False
-        if sc == "VIEW+RB":
-            triggered = state.buttons.get("VIEW", False) and state.buttons.get(
-                "RB", False
-            )
-        elif sc == "VIEW+LB":
-            triggered = state.buttons.get("VIEW", False) and state.buttons.get(
-                "LB", False
-            )
-        elif sc == "P4":
-            triggered = bool(state.extra_buttons.get(707, False))
 
-        if triggered:
+        matched = controller_shortcut_matches(sc, state)
+        if matched and not self._pad_combo_was_down:
             now = time.monotonic()
-            if now - self._last_ctrl_combo_fire >= 2.0:
+            if now - self._last_ctrl_combo_fire >= 1.5:
                 self._last_ctrl_combo_fire = now
-                self._trigger_save_clip("Mando")
+                self._trigger_save_clip(
+                    f"Mando ({format_controller_shortcut_label(sc)})"
+                )
+        self._pad_combo_was_down = matched
 
     def _build_ui(self) -> None:
         outer = QVBoxLayout(self)
@@ -319,16 +353,27 @@ class ClipsTabWidget(QWidget):
         self._pad_sc_combo.setSizeAdjustPolicy(
             QComboBox.AdjustToMinimumContentsLengthWithIcon
         )
-        self._pad_sc_combo.setMinimumContentsLength(8)
+        self._pad_sc_combo.setMinimumContentsLength(10)
         for val, lbl in (
             ("none", "Ninguno"),
+            ("SHARE", "Share / Captura"),
             ("VIEW+RB", "View + RB"),
             ("VIEW+LB", "View + LB"),
+            ("LB+RB", "LB + RB"),
             ("P4", "Paddle P4"),
         ):
             self._pad_sc_combo.addItem(lbl, val)
         self._pad_sc_combo.currentIndexChanged.connect(self._on_pad_shortcut_changed)
         hk_row.addWidget(self._pad_sc_combo)
+
+        self._btn_capture_pad = QPushButton("Capturar")
+        self._btn_capture_pad.setObjectName("MiniPill")
+        self._btn_capture_pad.setCheckable(True)
+        self._btn_capture_pad.setToolTip(
+            "Pulsa cualquier botón o combinación en tu mando y suéltalos para usarla al sacar clips"
+        )
+        self._btn_capture_pad.toggled.connect(self._on_pad_capture_toggled)
+        hk_row.addWidget(self._btn_capture_pad)
         tr_lay.addLayout(hk_row)
 
         self._hk_status_lbl = QLabel(
@@ -548,7 +593,7 @@ class ClipsTabWidget(QWidget):
             self._select_combo_data(self._voice_mic_combo, c.voice_mic_source)
             self._phrase_edit.setText(c.voice_phrase)
             self._hotkey_edit.setKeySequence(QKeySequence(c.hotkey_combo))
-            self._select_combo_data(self._pad_sc_combo, c.controller_shortcut)
+            self._set_pad_shortcut_combo(c.controller_shortcut)
             self._update_save_button_label()
             self._update_adv_summary()
         finally:
@@ -686,7 +731,7 @@ class ClipsTabWidget(QWidget):
         if not self._recorder.is_running():
             msg = "Primero pulsa 'Activar Replay' arriba para grabar en RAM."
             self._set_feedback(msg, "warn")
-            self.clip_notification.emit("Replay apagado", msg)
+            self.clip_notification.emit("Replay apagado", msg, "")
             return
 
         sec_txt = f"{override_sec or self._config.replay_seconds} s"
@@ -735,7 +780,7 @@ class ClipsTabWidget(QWidget):
         self._set_feedback(f"✓ Clip guardado: {name}", "ok")
         if self._config.sound_feedback:
             play_clip_saved_chime()
-        self.clip_notification.emit("Clip guardado", name)
+        self.clip_notification.emit("Clip guardado", name, path)
         self._refresh_clips_gallery(select_path=path)
 
     def _on_sound_toggled(self, checked: bool) -> None:
@@ -746,7 +791,7 @@ class ClipsTabWidget(QWidget):
 
     def _on_clip_save_failed(self, err: str) -> None:
         self._set_feedback(err, "warn")
-        self.clip_notification.emit("No se guardó el clip", err)
+        self.clip_notification.emit("No se guardó el clip", err, "")
 
     def _on_video_setting_changed(self) -> None:
         if self._syncing:
@@ -912,14 +957,9 @@ class ClipsTabWidget(QWidget):
         self._config.hotkey_combo = txt
         save_clips_config(self._config)
         self._local_shortcut.setKey(QKeySequence(txt))
-        if not is_wayland_session():
-            self._hk_status_lbl.setText(
-                f"Atajo global X11 activo ({txt} · funciona dentro de juegos)"
-            )
-        else:
-            self._hk_status_lbl.setText(
-                f"Tecla guardada: {txt} (pulsa 'Registrar global' para usarla en juegos)"
-            )
+        self._hk_status_lbl.setText(
+            f"Atajo global actualizado: {txt} (funciona dentro de juegos)"
+        )
         if self._hotkey_thread is not None:
             self._hotkey_thread.set_combo(txt)
 
@@ -932,14 +972,41 @@ class ClipsTabWidget(QWidget):
         if self._hotkey_thread is not None:
             self._hotkey_thread.request_portal_bind()
             self._hk_status_lbl.setText(
-                "Si aparece el aviso del sistema (KDE/Wayland), acéptalo para activar el atajo."
+                f"Sincronizando atajo global ({self._config.hotkey_combo}) con el sistema..."
+            )
+
+    def _set_pad_shortcut_combo(self, shortcut: str) -> None:
+        norm = normalize_controller_shortcut(shortcut)
+        idx = self._pad_sc_combo.findData(norm)
+        if idx < 0 and norm != "none":
+            self._pad_sc_combo.addItem(
+                format_controller_shortcut_label(norm), norm
+            )
+            idx = self._pad_sc_combo.findData(norm)
+        if idx >= 0:
+            self._pad_sc_combo.setCurrentIndex(idx)
+
+    def _on_pad_capture_toggled(self, checked: bool) -> None:
+        if self._syncing:
+            return
+        self._capturing_pad = checked
+        self._pad_capture_peak.clear()
+        if checked:
+            self._btn_capture_pad.setText("Pulsa...")
+            self._hk_status_lbl.setText(
+                "Pulsa en tu mando 1 o varios botones a la vez y suéltalos para guardar la combinación..."
+            )
+        else:
+            self._btn_capture_pad.setText("Capturar")
+            self._hk_status_lbl.setText(
+                f"Atajo de mando activo: {format_controller_shortcut_label(self._config.controller_shortcut)}"
             )
 
     def _on_pad_shortcut_changed(self) -> None:
         if self._syncing:
             return
-        self._config.controller_shortcut = str(
-            self._pad_sc_combo.currentData() or "none"
+        self._config.controller_shortcut = normalize_controller_shortcut(
+            str(self._pad_sc_combo.currentData() or "none")
         )
         save_clips_config(self._config)
 
@@ -976,12 +1043,35 @@ class ClipsTabWidget(QWidget):
             if select_path and str(p) == str(select_path):
                 target_row = idx
 
+        if select_path and target_row < 0:
+            sp = Path(select_path)
+            if sp.is_file():
+                mb = sp.stat().st_size / (1024.0 * 1024.0)
+                item = QListWidgetItem(f"{sp.name}  ({mb:.1f} MB)")
+                item.setData(Qt.UserRole, str(sp))
+                self._clips_list.addItem(item)
+                target_row = self._clips_list.count() - 1
+
         if target_row >= 0:
             self._auto_selecting_saved = True
             try:
                 self._clips_list.setCurrentRow(target_row)
+                item = self._clips_list.item(target_row)
+                if item is not None:
+                    self._clips_list.scrollToItem(item)
             finally:
                 self._auto_selecting_saved = False
+
+    def select_clip_by_path(self, clip_path: str) -> bool:
+        """Refresh gallery and select the specified clip path in the player."""
+        if not clip_path:
+            return False
+        self._refresh_clips_gallery(select_path=clip_path)
+        item = self._clips_list.currentItem()
+        if item is not None and str(item.data(Qt.UserRole)) == str(clip_path):
+            self._clips_list.setFocus()
+            return True
+        return False
 
     def _sync_player_audio_output(self) -> None:
         dev = QMediaDevices.defaultAudioOutput()

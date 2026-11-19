@@ -655,7 +655,12 @@ class ClipsSubsystemTests(unittest.TestCase):
         self.assertEqual(len(mods), 2)
         self.assertEqual(main_k, 46)
 
-        from antidrift.clips.hotkey_listener import _x11_keycode_pressed, parse_combo_x11_names
+        from PySide6.QtGui import QKeySequence
+        from antidrift.clips.hotkey_listener import (
+            _x11_keycode_pressed,
+            parse_combo_x11_names,
+            qt_seq_to_combined_int,
+        )
 
         x_mods, x_main = parse_combo_x11_names("Alt+Shift+C")
         self.assertEqual(len(x_mods), 2)
@@ -664,6 +669,272 @@ class ClipsSubsystemTests(unittest.TestCase):
         kbuf[54 >> 3] |= 1 << (54 & 7)
         self.assertTrue(_x11_keycode_pressed(bytes(kbuf), 54))
         self.assertFalse(_x11_keycode_pressed(bytes(kbuf), 55))
+
+        for combo_str in ("Alt+Shift+C", "Ctrl+Shift+F9", "Meta+Alt+Space", "Esc", "Pause"):
+            self.assertEqual(
+                qt_seq_to_combined_int(combo_str),
+                QKeySequence(combo_str)[0].toCombined(),
+            )
+
+    def test_kde_globalaccel_sets_present_flag_and_x11_companion(self) -> None:
+        from contextlib import contextmanager
+        from unittest import mock
+
+        from antidrift.clips.hotkey_listener import GlobalHotkeyThread
+
+        calls: list[tuple[str, object]] = []
+
+        class _FakeReply:
+            def __init__(self, body):
+                self.body = body
+
+        class _FakeMsg:
+            def __init__(self, body):
+                self.body = body
+
+        class _FakeConn:
+            def send_and_get_reply(self, msg):
+                member = msg.header.fields.get(3)  # HeaderFields.member
+                calls.append((member, msg.body))
+                if member == "NameHasOwner":
+                    return _FakeReply([True])
+                if member == "getComponent":
+                    return _FakeReply(["/component/xbox_antidrift_gui"])
+                return _FakeReply([])
+
+            @contextmanager
+            def filter(self, _rule):
+                yield object()
+
+            def recv_until_filtered(self, _q, timeout=0.25):
+                # Emit one globalShortcutPressed then request stop
+                th._stop_requested = True
+                return _FakeMsg(("xbox-antidrift-gui", "save_clip", 1))
+
+            def close(self):
+                calls.append(("close", None))
+
+        th = GlobalHotkeyThread("Alt+Shift+C")
+        triggered: list[tuple[str, int]] = []
+        th.hotkey_triggered.connect(lambda src, sec: triggered.append((src, sec)))
+
+        with mock.patch("jeepney.io.blocking.open_dbus_connection", return_value=_FakeConn()):
+            ok = th._run_kde_globalaccel_loop()
+
+        self.assertTrue(ok)
+        set_sc = [body for name, body in calls if name == "setShortcut"]
+        self.assertTrue(set_sc)
+        self.assertEqual(set_sc[0][2], 6)  # SetPresent (2) | NoAutoloading (4)
+        self.assertTrue(any(name == "setInactive" for name, _ in calls))
+        self.assertEqual(triggered, [("Atajo global (Alt+Shift+C)", 0)])
+
+        # Verify run() runs XQueryKeymap companion with emit_status=False when DISPLAY is set
+        x11_kwargs: list[dict] = []
+        th2 = GlobalHotkeyThread("Alt+Shift+C")
+        th2._stop_requested = True
+        with (
+            mock.patch.dict(os.environ, {"DISPLAY": ":1", "XDG_SESSION_TYPE": "wayland"}, clear=False),
+            mock.patch.object(th2, "_run_ipc_server", return_value=None),
+            mock.patch.object(th2, "_readable_keyboards", return_value=[]),
+            mock.patch.object(th2, "_kde_kglobalaccel_available", return_value=True),
+            mock.patch.object(th2, "_run_kde_globalaccel_loop", return_value=True),
+            mock.patch.object(
+                th2,
+                "_run_x11_loop",
+                side_effect=lambda emit_status=True: x11_kwargs.append({"emit_status": emit_status}) or True,
+            ),
+        ):
+            th2.run()
+        self.assertEqual(x11_kwargs, [{"emit_status": False}])
+
+    def test_clickable_clip_notification_and_selection(self) -> None:
+        from types import SimpleNamespace
+        from jeepney import HeaderFields, MessageType
+        from antidrift.clips.desktop_notifier import DesktopClipNotifier
+        from antidrift.main_window import MainWindow
+
+        notifier = DesktopClipNotifier()
+        addr_dummy = SimpleNamespace(
+            bus_name="org.freedesktop.Notifications",
+            object_path="/org/freedesktop/Notifications",
+            interface="org.freedesktop.Notifications",
+        )
+        msg = notifier._build_notify_call(
+            addr_dummy, "Clip guardado", "Replay_1.mp4", "/tmp/Replay_1.mp4", 5000
+        )
+        actions = msg.body[5]
+        self.assertIn("default", actions)
+        self.assertIn("open_clip", actions)
+        self.assertIn("Ver en Studio", actions)
+
+        notifier._record_notification(41, "/tmp/Replay_1.mp4")
+        notifier._record_notification(42, "/tmp/Replay_2.mp4")
+
+        opened: list[tuple[str, str]] = []
+        notifier.open_clip_requested.connect(lambda p, tok: opened.append((p, tok)))
+
+        def _sig(member: str, body: tuple):
+            return SimpleNamespace(
+                header=SimpleNamespace(
+                    message_type=MessageType.signal,
+                    fields={
+                        HeaderFields.interface: "org.freedesktop.Notifications",
+                        HeaderFields.member: member,
+                    },
+                ),
+                body=body,
+            )
+
+        notifier._handle_incoming(_sig("ActivationToken", (41, "tok-41")))
+        notifier._handle_incoming(_sig("ActionInvoked", (41, "open_clip")))
+        notifier._handle_incoming(_sig("ActionInvoked", (42, "default")))
+        self.assertEqual(
+            opened,
+            [("/tmp/Replay_1.mp4", "tok-41"), ("/tmp/Replay_2.mp4", "")],
+        )
+
+        # Verify MainWindow selects the exact notification clip and switches to Clips tab
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QApplication
+
+        _app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as tmp:
+            clip1 = Path(tmp) / "Replay_older.mp4"
+            clip2 = Path(tmp) / "Replay_newer.mp4"
+            clip1.write_bytes(b"0" * 1024)
+            clip2.write_bytes(b"0" * 2048)
+            os.utime(clip1, (1000, 1000))
+            os.utime(clip2, (2000, 2000))
+
+            old_xdg = os.environ.get("XDG_CONFIG_HOME")
+            os.environ["XDG_CONFIG_HOME"] = tmp
+            try:
+                win = MainWindow(start_reader=False, enable_tray=False)
+                win._clips_tab._config.output_dir = tmp
+                win._main_tabs.setCurrentIndex(0)
+                win._on_open_clip_from_notification(str(clip1), "xdg-tok-1")
+
+                self.assertEqual(win._main_tabs.currentIndex(), win._clips_tab_idx)
+                cur = win._clips_tab._clips_list.currentItem()
+                self.assertIsNotNone(cur)
+                self.assertEqual(cur.data(Qt.UserRole), str(clip1))
+                self.assertEqual(os.environ.get("XDG_ACTIVATION_TOKEN"), "xdg-tok-1")
+                win.close()
+            finally:
+                if old_xdg is None:
+                    os.environ.pop("XDG_CONFIG_HOME", None)
+                else:
+                    os.environ["XDG_CONFIG_HOME"] = old_xdg
+
+    def test_xbox_share_preview_and_custom_pad_combo(self) -> None:
+        from PySide6.QtCore import QPointF, Qt
+        from PySide6.QtGui import QMouseEvent
+        from PySide6.QtWidgets import QApplication
+        from unittest import mock
+
+        from antidrift.clips.clips_config import (
+            controller_shortcut_matches,
+            extract_pressed_pad_tokens,
+            format_controller_shortcut_label,
+            normalize_controller_shortcut,
+        )
+        from antidrift.clips.clips_tab import ClipsTabWidget
+        from antidrift.widgets.controller_widget import ControllerWidget
+
+        # 1. Token normalization, label formatting & multi-button matching
+        self.assertEqual(normalize_controller_shortcut("rb + view"), "VIEW+RB")
+        self.assertEqual(normalize_controller_shortcut("Captura"), "SHARE")
+        self.assertEqual(normalize_controller_shortcut("A+X+LB+RB"), "LB+RB+A+X")
+        self.assertEqual(
+            format_controller_shortcut_label("LT+RT+Y"),
+            "LT + RT + Y",
+        )
+
+        st_share = ControllerState(mode="live", extra_buttons={167: True})
+        self.assertEqual(extract_pressed_pad_tokens(st_share), ["SHARE"])
+        self.assertTrue(controller_shortcut_matches("SHARE", st_share))
+
+        st_chord = ControllerState(
+            mode="live",
+            buttons={**ControllerState().buttons, "LB": True, "RB": True, "A": True},
+            lt=800,
+            hat_y=-1,
+            extra_buttons={710: True},
+        )
+        self.assertTrue(controller_shortcut_matches("LB+RB+A", st_chord))
+        self.assertTrue(controller_shortcut_matches("LT+UP+KEY_710", st_chord))
+        self.assertFalse(controller_shortcut_matches("LB+RB+B", st_chord))
+
+        # 2. Xbox Share button exists on ControllerWidget preview and toggles 167 in simulator
+        _app = QApplication.instance() or QApplication([])
+        cw = ControllerWidget()
+        cw.resize(int(cw.LOGICAL_W), int(cw.LOGICAL_H))
+        cw.set_simulator_enabled(True)
+        share_pt = cw._layout_spec().share
+        self.assertIsNotNone(share_pt)
+        ev = QMouseEvent(
+            QMouseEvent.Type.MouseButtonPress,
+            QPointF(share_pt.x(), share_pt.y()),
+            Qt.LeftButton,
+            Qt.LeftButton,
+            Qt.NoModifier,
+        )
+        cw.mousePressEvent(ev)
+        self.assertTrue(cw._state.extra_buttons.get(167, False))
+
+        # 3. Interactive peak-hold capture & edge-triggered save on ClipsTabWidget
+        with tempfile.TemporaryDirectory() as tmp:
+            old_xdg = os.environ.get("XDG_CONFIG_HOME")
+            os.environ["XDG_CONFIG_HOME"] = tmp
+            try:
+                tab = ClipsTabWidget(start_background=False)
+                tab._btn_capture_pad.setChecked(True)
+                self.assertTrue(tab._capturing_pad)
+
+                tab.process_controller_state(
+                    ControllerState(
+                        mode="live",
+                        buttons={**ControllerState().buttons, "LB": True},
+                    )
+                )
+                tab.process_controller_state(
+                    ControllerState(
+                        mode="live",
+                        buttons={**ControllerState().buttons, "LB": True, "RB": True, "A": True},
+                    )
+                )
+                # Still capturing until released
+                self.assertTrue(tab._capturing_pad)
+                # Release all -> finalizes combo even with Replay off
+                tab.process_controller_state(ControllerState(mode="live"))
+                self.assertFalse(tab._capturing_pad)
+                self.assertEqual(tab._config.controller_shortcut, "LB+RB+A")
+                self.assertEqual(tab._pad_sc_combo.currentData(), "LB+RB+A")
+
+                # Edge-triggered clip trigger fires once per hold while Replay is active
+                saved_calls: list[str] = []
+                with (
+                    mock.patch.object(tab._recorder, "is_running", return_value=True),
+                    mock.patch.object(
+                        tab, "_trigger_save_clip", side_effect=lambda src: saved_calls.append(src)
+                    ),
+                ):
+                    chord_state = ControllerState(
+                        mode="live",
+                        buttons={**ControllerState().buttons, "LB": True, "RB": True, "A": True},
+                    )
+                    tab.process_controller_state(chord_state)
+                    tab.process_controller_state(chord_state)  # held -> no repeat
+                    tab.process_controller_state(ControllerState(mode="live"))  # release
+                    tab._last_ctrl_combo_fire = 0.0
+                    tab.process_controller_state(chord_state)  # second press -> fires again
+                self.assertEqual(len(saved_calls), 2)
+                tab.shutdown()
+            finally:
+                if old_xdg is None:
+                    os.environ.pop("XDG_CONFIG_HOME", None)
+                else:
+                    os.environ["XDG_CONFIG_HOME"] = old_xdg
 
     def test_distro_deps_detection(self) -> None:
         from antidrift.deps import DistroInfo, build_distro_install_command, check_dependencies, detect_distro
@@ -871,6 +1142,330 @@ class UpdaterTests(unittest.TestCase):
             self.assertTrue(ok, msg)
             self.assertTrue(restart_rec)
             self.assertIn('version = "1.1.0"', (client / "pyproject.toml").read_text(encoding="utf-8"))
+
+
+class EqualizerSubsystemTests(unittest.TestCase):
+    def test_eq_config_math_presets_and_roundtrip(self) -> None:
+        from antidrift.audio.eq_config import (
+            EQ_BAND_FREQS,
+            EQ_PRESETS,
+            EqualizerConfig,
+            biquad_coefficients,
+            compute_eq_curve_db,
+            effective_preamp_db,
+            load_eq_config,
+            save_eq_config,
+        )
+
+        flat_curve = compute_eq_curve_db([0.0] * 10, 0.0, False, freqs_hz=[31.0, 1000.0, 16000.0])
+        self.assertEqual(flat_curve, [0.0, 0.0, 0.0])
+
+        fps_bands = list(EQ_PRESETS["Gaming / Pasos FPS"]["bands"])
+        self.assertEqual(effective_preamp_db(fps_bands, 0.0, True), -5.5)
+        self.assertEqual(effective_preamp_db(fps_bands, 2.0, False), 2.0)
+        self.assertEqual(effective_preamp_db(fps_bands, 2.0, True, bypass=True), 0.0)
+
+        bass_bands = list(EQ_PRESETS["Graves Potentes"]["bands"])
+        bass_curve = compute_eq_curve_db(bass_bands, 0.0, False, freqs_hz=[31.0, 1000.0, 16000.0])
+        self.assertGreater(bass_curve[0], 4.0)
+        self.assertGreater(bass_curve[0], bass_curve[1])
+        self.assertEqual(
+            compute_eq_curve_db(bass_bands, 0.0, False, freqs_hz=[31.0, 1000.0], bypass=True),
+            [0.0, 0.0],
+        )
+
+        # Unity coefficients when gain is zero
+        self.assertEqual(biquad_coefficients("peaking", 1000.0, 1.4, 0.0), (1.0, 0.0, 0.0, 1.0, 0.0, 0.0))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "eq.json"
+            cfg = EqualizerConfig(
+                enabled=True,
+                bypass=False,
+                output_sink="alsa_output.pci-0000_07_00.6.analog-stereo",
+                preamp_db=1.5,
+                auto_preamp=True,
+                balance=-0.35,
+                band_gains=[3.5, 2.0, 0.0, -1.5, 0.0, 1.0, 2.5, 4.0, 2.0, 1.5],
+                active_preset="Mi EQ",
+                custom_presets={"Mi EQ": {"preamp_db": 1.5, "bands": [3.5] + [0.0] * 9}},
+                previous_default_sink="alsa_output.pci-0000_07_00.6.analog-stereo",
+            )
+            save_eq_config(cfg, p)
+            loaded = load_eq_config(p)
+            self.assertTrue(loaded.enabled)
+            self.assertEqual(len(loaded.band_gains), len(EQ_BAND_FREQS))
+            self.assertEqual(loaded.balance, -0.35)
+            self.assertIn("Mi EQ", loaded.custom_presets)
+
+    def test_eq_pipewire_backend_and_mixer(self) -> None:
+        import json
+        from unittest import mock
+        from antidrift.audio.eq_backend import (
+            EQ_PLAYBACK_NAME,
+            EQ_SINK_NAME,
+            apply_eq_live_params,
+            generate_pipewire_eq_conf,
+            list_physical_sinks,
+            list_sink_inputs,
+            set_sink_volume_and_balance,
+        )
+        from antidrift.audio.eq_config import EqualizerConfig
+
+        cfg = EqualizerConfig(
+            enabled=True,
+            preamp_db=0.0,
+            auto_preamp=True,
+            band_gains=[4.0, 2.0, 0.0, 0.0, 0.0, 0.0, 1.0, 3.0, 2.0, 0.0],
+        )
+        conf_txt = generate_pipewire_eq_conf(cfg, "alsa_output.test")
+        self.assertIn("libpipewire-module-filter-chain", conf_txt)
+        self.assertIn('label = bq_lowshelf', conf_txt)
+        self.assertIn('label = bq_peaking', conf_txt)
+        self.assertIn('label = bq_highshelf', conf_txt)
+        self.assertIn(f'node.name        = "{EQ_SINK_NAME}"', conf_txt)
+        self.assertIn('target.object = "alsa_output.test"', conf_txt)
+        self.assertIn('label = bq_lowshelf control = { "Freq" = 31.0 "Q" = 0.707 "Gain" = 4.00 }', conf_txt)
+        # Auto preamp = -4.0 dB => Mult ~ 0.630957
+        self.assertIn('"Mult" = 0.630957', conf_txt)
+        # Stereo Mid/Side + Haas nodes present (off by default -> raw passthrough)
+        self.assertIn('name = st_haas label = delay config = { "max-delay" = 1 }', conf_txt)
+        self.assertIn('"Gain 1" = 0.0000 "Gain 2" = 0.0000 "Gain 3" = 1.0000', conf_txt)
+
+        from antidrift.audio.eq_config import compute_stereo_dsp_params
+
+        st_on = compute_stereo_dsp_params(True, 0.5, bypass=False)
+        self.assertEqual(st_on["side_gain"], 1.75)
+        self.assertEqual(st_on["haas_delay_ms"], 10.0)
+        self.assertEqual(st_on["raw_side_gain"], 0.0)
+        self.assertEqual(st_on["exciter_16k_db"], 5.0)
+        cfg_st = cfg.copy()
+        cfg_st.stereo_enabled = True
+        cfg_st.stereo_width = 0.5
+        st_txt = generate_pipewire_eq_conf(cfg_st, "alsa_output.test")
+        self.assertIn('"Gain 1" = 1.7500', st_txt)
+        self.assertIn('"Delay (s)" = 0.0100', st_txt)
+
+        # Bypass zeroes gains & preamp multiplier cleanly
+        cfg_bp = cfg.copy()
+        cfg_bp.bypass = True
+        bp_txt = generate_pipewire_eq_conf(cfg_bp, "alsa_output.test")
+        self.assertIn('"Mult" = 1.000000', bp_txt)
+        self.assertIn('"Gain" = 0.00', bp_txt)
+
+        fake_sinks_json = json.dumps([
+            {
+                "name": EQ_SINK_NAME,
+                "description": "Anti-Drift Studio EQ",
+                "mute": False,
+                "volume": {"front-left": {"value_percent": "100%"}},
+                "balance": 0.0,
+                "properties": {"device.description": "Anti-Drift Studio EQ"},
+                "ports": [],
+            },
+            {
+                "name": "alsa_output.test_hw",
+                "description": "(null)",
+                "mute": False,
+                "volume": {"front-left": {"value_percent": "80%"}, "front-right": {"value_percent": "80%"}},
+                "balance": 0.0,
+                "properties": {"device.description": "Ryzen HD Audio"},
+                "active_port": "analog-output-headphones",
+                "ports": [{"name": "analog-output-headphones", "description": "Auriculares"}],
+            },
+        ])
+        fake_inputs_json = json.dumps([
+            {
+                "index": 10,
+                "sink": 1,
+                "mute": False,
+                "volume": {"front-left": {"value_percent": "100%"}},
+                "properties": {"node.name": EQ_PLAYBACK_NAME, "media.name": "Anti-Drift Studio EQ"},
+            },
+            {
+                "index": 22,
+                "sink": 1,
+                "mute": False,
+                "volume": {"front-left": {"value_percent": "72%"}},
+                "properties": {"application.name": "Spotify", "application.process.binary": "spotify"},
+            },
+        ])
+
+        def _fake_run(args, timeout=4.0):
+            if args == ["pactl", "get-default-sink"]:
+                return 0, "alsa_output.test_hw", ""
+            if args == ["pactl", "-f", "json", "list", "sinks"]:
+                return 0, fake_sinks_json, ""
+            if args == ["pactl", "-f", "json", "list", "sink-inputs"]:
+                return 0, fake_inputs_json, ""
+            return 0, "", ""
+
+        with mock.patch("antidrift.audio.eq_backend._run", side_effect=_fake_run):
+            phys = list_physical_sinks()
+            self.assertEqual(len(phys), 1)
+            self.assertEqual(phys[0].name, "alsa_output.test_hw")
+            self.assertEqual(phys[0].description, "Ryzen HD Audio · Auriculares")
+            self.assertEqual(phys[0].volume_pct, 80)
+
+            streams = list_sink_inputs()
+            self.assertEqual(len(streams), 1)
+            self.assertEqual(streams[0].index, 22)
+            self.assertEqual(streams[0].name, "Spotify")
+
+        calls: list[list[str]] = []
+        with mock.patch(
+            "antidrift.audio.eq_backend._run",
+            side_effect=lambda a, timeout=4.0: (calls.append(a) or (0, "", "")),
+        ):
+            set_sink_volume_and_balance("sink_x", 100, -0.5)
+            set_sink_volume_and_balance("sink_x", 80, 0.5)
+        self.assertEqual(calls[0], ["pactl", "set-sink-volume", "sink_x", "100%", "50%"])
+        self.assertEqual(calls[1], ["pactl", "set-sink-volume", "sink_x", "40%", "80%"])
+
+        pw_calls: list[list[str]] = []
+        pw_dump_out = json.dumps([
+            {"id": 99, "type": "PipeWire:Interface:Node", "info": {"props": {"node.name": EQ_SINK_NAME}}}
+        ])
+
+        def _fake_pw(args, timeout=4.0):
+            pw_calls.append(args)
+            if args == ["pw-dump"]:
+                return 0, pw_dump_out, ""
+            return 0, "", ""
+
+        with mock.patch("antidrift.audio.eq_backend._run", side_effect=_fake_pw):
+            ok_live = apply_eq_live_params(cfg)
+        self.assertTrue(ok_live)
+        self.assertEqual(pw_calls[-1][:4], ["pw-cli", "s", "99", "Props"])
+        self.assertIn('"b1:Gain" 4.00', pw_calls[-1][4])
+
+        # Verify EQ monitor is treated as virtual (prevents clip echo on Wayland & X11)
+        from antidrift.clips.recorder import is_virtual_audio_monitor
+        from antidrift.clips.hotkey_listener import GlobalHotkeyThread
+        from antidrift.audio.eq_backend import _bands_10_to_mbeq15, start_or_update_eq
+
+        self.assertTrue(is_virtual_audio_monitor(f"{EQ_SINK_NAME}.monitor"))
+        self.assertEqual(len(_bands_10_to_mbeq15(cfg.band_gains)), 15)
+
+        # Verify PulseAudio LADSPA fallback on legacy X11 sessions without PipeWire
+        pa_cmds: list[list[str]] = []
+
+        def _fake_pa_run(args, timeout=4.0):
+            pa_cmds.append(args)
+            if args == ["pactl", "list", "short", "sinks"]:
+                return 0, f"1\t{EQ_SINK_NAME}\tmodule-ladspa-sink\tfloat32le\tRUNNING\n", ""
+            return 0, "", ""
+
+        with (
+            mock.patch("antidrift.audio.eq_backend._run", side_effect=_fake_pa_run),
+            mock.patch("antidrift.audio.eq_backend.shutil.which", side_effect=lambda b: "/usr/bin/pactl" if b == "pactl" else None),
+            mock.patch("antidrift.audio.eq_backend.is_pipewire_session", return_value=False),
+            mock.patch("antidrift.audio.eq_backend._has_ladspa_mbeq", return_value=True),
+            mock.patch("antidrift.audio.eq_backend.resolve_target_sink", return_value="alsa_output.test_hw"),
+            mock.patch("antidrift.audio.eq_backend.eq_sink_exists", return_value=True),
+        ):
+            pa_st = start_or_update_eq(cfg)
+        self.assertTrue(pa_st.active)
+        self.assertEqual(pa_st.backend, "pulseaudio")
+        self.assertTrue(any("module-ladspa-sink" in c for c in pa_cmds))
+
+        # Verify GlobalHotkeyThread pure-X11 (non-KDE X11) triggers XQueryKeymap primary
+        x11_direct: list[bool] = []
+        th_x11 = GlobalHotkeyThread("Alt+Shift+C")
+        with (
+            mock.patch.dict(os.environ, {"DISPLAY": ":0", "XDG_SESSION_TYPE": "x11", "WAYLAND_DISPLAY": ""}, clear=False),
+            mock.patch.object(th_x11, "_run_ipc_server", return_value=None),
+            mock.patch.object(th_x11, "_readable_keyboards", return_value=[]),
+            mock.patch.object(th_x11, "_kde_kglobalaccel_available", return_value=False),
+            mock.patch.object(th_x11, "_run_kde_globalaccel_loop", return_value=False),
+            mock.patch.object(th_x11, "_run_x11_loop", side_effect=lambda emit_status=True: x11_direct.append(emit_status) or True),
+        ):
+            th_x11.run()
+        self.assertEqual(x11_direct, [True])
+
+    def test_eq_tab_ui_and_main_window_integration(self) -> None:
+        from PySide6.QtCore import QSize
+        from PySide6.QtGui import QImage
+        from PySide6.QtWidgets import QApplication
+        from antidrift.main_window import MainWindow
+
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as tmp:
+            old_xdg = os.environ.get("XDG_CONFIG_HOME")
+            os.environ["XDG_CONFIG_HOME"] = tmp
+            try:
+                win = MainWindow(start_reader=False, enable_tray=False)
+                win.resize(1180, 770)
+                win._main_tabs.setCurrentIndex(win._eq_tab_idx)
+                app.processEvents()
+
+                eq_tab = win._eq_tab
+                eq_tab._apply_preset_by_name("Graves Potentes")
+                self.assertEqual(eq_tab._config.active_preset, "Graves Potentes")
+                self.assertEqual(eq_tab._band_sliders[0].value(), 65)
+                self.assertEqual(eq_tab._preamp_lbl.text(), "-6.5")
+
+                # Manual band change updates preset to Personalizado and reset restores 0.0 dB
+                eq_tab._band_sliders[2].setValue(55)
+                self.assertEqual(eq_tab._config.band_gains[2], 5.5)
+                self.assertEqual(eq_tab._config.active_preset, "Personalizado")
+                eq_tab._band_sliders[2].reset_requested.emit()
+                self.assertEqual(eq_tab._config.band_gains[2], 0.0)
+
+                # Balance readout
+                eq_tab._bal_slider.setValue(-40)
+                self.assertEqual(eq_tab._bal_lbl.text(), "I 40%")
+                eq_tab._bal_slider.reset_requested.emit()
+                self.assertEqual(eq_tab._bal_lbl.text(), "Centro")
+
+                # Stereo Amplification quick pill auto-enables both stereo and DSP
+                eq_tab._config.enabled = False
+                eq_tab._config.stereo_enabled = False
+                eq_tab._apply_stereo_quick_pct(80)
+                self.assertTrue(eq_tab._config.stereo_enabled)
+                self.assertTrue(eq_tab._config.enabled)
+                self.assertEqual(eq_tab._config.stereo_width, 0.8)
+                self.assertIn("80%", eq_tab._stereo_val_lbl.text())
+
+                # Non-disruptive in-place app mixer auto-refresh
+                from antidrift.audio.eq_backend import AudioAppStream
+
+                eq_tab.refresh_app_streams([
+                    AudioAppStream(index=22, name="Spotify", app_binary="spotify", sink_id="68", volume_pct=16, muted=False)
+                ])
+                self.assertIn(22, eq_tab._app_rows)
+                sl_spot = eq_tab._app_rows[22][3]
+                self.assertEqual(sl_spot.value(), 16)
+
+                # External update updates slider in-place without recreating widget
+                eq_tab.refresh_app_streams([
+                    AudioAppStream(index=22, name="Spotify", app_binary="spotify", sink_id="68", volume_pct=48, muted=False),
+                    AudioAppStream(index=30, name="Discord", app_binary="Discord", sink_id="68", volume_pct=90, muted=False),
+                ])
+                self.assertIs(eq_tab._app_rows[22][3], sl_spot)
+                self.assertEqual(sl_spot.value(), 48)
+                self.assertIn(30, eq_tab._app_rows)
+
+                # While user is actively dragging slider, external refresh does not yank it
+                sl_spot.setSliderDown(True)
+                sl_spot.setValue(60)
+                eq_tab.refresh_app_streams([
+                    AudioAppStream(index=22, name="Spotify", app_binary="spotify", sink_id="68", volume_pct=20, muted=False),
+                ])
+                self.assertEqual(sl_spot.value(), 60)
+                self.assertNotIn(30, eq_tab._app_rows)
+                sl_spot.setSliderDown(False)
+
+                # Render tab cleanly offscreen
+                img = QImage(QSize(1180, 770), QImage.Format_ARGB32)
+                win.render(img)
+                self.assertFalse(img.isNull())
+                win.close()
+            finally:
+                if old_xdg is None:
+                    os.environ.pop("XDG_CONFIG_HOME", None)
+                else:
+                    os.environ["XDG_CONFIG_HOME"] = old_xdg
 
 
 if __name__ == "__main__":

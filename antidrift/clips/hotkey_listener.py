@@ -60,10 +60,55 @@ _X11_SPECIAL_KEYSYMS: dict[str, str] = {
 
 _X11_MOD_KEYSYMS: dict[str, tuple[str, ...]] = {
     "CTRL": ("Control_L", "Control_R"),
-    "ALT": ("Alt_L", "Alt_R"),
+    "ALT": ("Alt_L", "Alt_R", "ISO_Level3_Shift"),
     "SHIFT": ("Shift_L", "Shift_R"),
     "META": ("Super_L", "Super_R"),
 }
+
+
+_QT_MOD_BITS: dict[str, int] = {
+    "SHIFT": 0x02000000,
+    "CTRL": 0x04000000,
+    "CONTROL": 0x04000000,
+    "ALT": 0x08000000,
+    "META": 0x10000000,
+    "SUPER": 0x10000000,
+    "WIN": 0x10000000,
+}
+
+_QT_KEY_BITS: dict[str, int] = {
+    "ESC": 0x01000000,
+    "INS": 0x01000006,
+    "DEL": 0x01000007,
+    "PAUSE": 0x01000008,
+    "HOME": 0x01000010,
+    "END": 0x01000011,
+    "LEFT": 0x01000012,
+    "UP": 0x01000013,
+    "RIGHT": 0x01000014,
+    "DOWN": 0x01000015,
+    "PGUP": 0x01000016,
+    "PGDOWN": 0x01000017,
+    "SPACE": 0x20,
+    **{f"F{n}": 0x01000030 + (n - 1) for n in range(1, 13)},
+}
+
+
+def qt_seq_to_combined_int(seq: str) -> int:
+    """Convert Qt QKeySequence text (e.g. 'Alt+Shift+C') to Qt combined key integer."""
+    mod_mask = 0
+    key_code = 0
+    for part in seq.split("+"):
+        u = part.strip().upper()
+        if not u:
+            continue
+        if u in _QT_MOD_BITS:
+            mod_mask |= _QT_MOD_BITS[u]
+        elif u in _QT_KEY_BITS:
+            key_code = _QT_KEY_BITS[u]
+        elif len(u) == 1 and u.isalnum():
+            key_code = ord(u)
+    return (mod_mask | key_code) if key_code else 0
 
 
 def parse_combo_x11_names(seq: str) -> tuple[list[tuple[str, ...]], str | None]:
@@ -484,14 +529,185 @@ class GlobalHotkeyThread(QThread):
 
         session = os.environ.get("XDG_SESSION_TYPE", "").strip().lower()
         is_x11 = session == "x11" or (not session and not os.environ.get("WAYLAND_DISPLAY"))
+        has_display = bool(os.environ.get("DISPLAY"))
+
+        # Run XQueryKeymap companion listener whenever DISPLAY is present (covers
+        # fullscreen X11 games with XGrabKeyboard and XWayland Proton/Wine games).
+        if has_display and self._kde_kglobalaccel_available():
+            x11_t = threading.Thread(
+                target=self._run_x11_loop, kwargs={"emit_status": False}, daemon=True
+            )
+            x11_t.start()
+            ok_kde = self._run_kde_globalaccel_loop()
+            if ok_kde:
+                x11_t.join(timeout=0.5)
+                return
+            x11_t.join(timeout=0.5)
+
+        if self._run_kde_globalaccel_loop():
+            return
+
         if is_x11 and self._run_x11_loop():
             return
+
+        if has_display:
+            x11_bg = threading.Thread(
+                target=self._run_x11_loop, kwargs={"emit_status": False}, daemon=True
+            )
+            x11_bg.start()
 
         self._run_portal_loop()
         while not self._stop_requested:
             time.sleep(0.25)
 
-    def _run_x11_loop(self) -> bool:
+    def _emit_debounced_hotkey(self, source_label: str) -> None:
+        now = time.monotonic()
+        with self._lock:
+            last = getattr(self, "_last_global_fire", 0.0)
+            if now - last < 1.1:
+                return
+            self._last_global_fire = now
+        self.hotkey_triggered.emit(source_label, 0)
+
+    def _kde_kglobalaccel_available(self) -> bool:
+        try:
+            from jeepney import DBusAddress, new_method_call
+            from jeepney.io.blocking import open_dbus_connection
+        except ImportError:
+            return False
+        try:
+            conn = open_dbus_connection(bus="SESSION")
+            try:
+                dbus_addr = DBusAddress(
+                    "/org/freedesktop/DBus",
+                    bus_name="org.freedesktop.DBus",
+                    interface="org.freedesktop.DBus",
+                )
+                rep = conn.send_and_get_reply(
+                    new_method_call(dbus_addr, "NameHasOwner", "s", ("org.kde.kglobalaccel",))
+                )
+                return bool(rep.body and rep.body[0])
+            finally:
+                conn.close()
+        except Exception:
+            return False
+
+    def _run_kde_globalaccel_loop(self) -> bool:
+        """Bind & listen via KDE KGlobalAccel D-Bus (works natively inside Wayland/X11 games)."""
+        try:
+            from jeepney import DBusAddress, MatchRule, new_method_call
+            from jeepney.io.blocking import open_dbus_connection
+        except ImportError:
+            return False
+
+        try:
+            conn = open_dbus_connection(bus="SESSION")
+        except Exception:
+            return False
+
+        action_id = [
+            "xbox-antidrift-gui",
+            "save_clip",
+            "Anti-Drift Studio",
+            "Guardar clip instantáneo",
+        ]
+        try:
+            ka = DBusAddress(
+                "/kglobalaccel",
+                bus_name="org.kde.kglobalaccel",
+                interface="org.kde.KGlobalAccel",
+            )
+            bus_iface = DBusAddress(
+                "/org/freedesktop/DBus",
+                bus_name="org.freedesktop.DBus",
+                interface="org.freedesktop.DBus",
+            )
+            has_rep = conn.send_and_get_reply(
+                new_method_call(bus_iface, "NameHasOwner", "s", ("org.kde.kglobalaccel",))
+            )
+            if not (has_rep.body and has_rep.body[0]):
+                return False
+
+            conn.send_and_get_reply(
+                new_method_call(ka, "doRegister", "as", (action_id,))
+            )
+            comp_rep = conn.send_and_get_reply(
+                new_method_call(ka, "getComponent", "s", ("xbox-antidrift-gui",))
+            )
+            comp_path = comp_rep.body[0]
+
+            rule = MatchRule(
+                type="signal",
+                interface="org.kde.kglobalaccel.Component",
+                member="globalShortcutPressed",
+                path=comp_path,
+            )
+            conn.send_and_get_reply(
+                new_method_call(bus_iface, "AddMatch", "s", (rule.serialise(),))
+            )
+
+            def _bind_kde_key(combo_str: str) -> None:
+                kc = qt_seq_to_combined_int(combo_str)
+                if kc <= 0:
+                    return
+                conn.send_and_get_reply(
+                    new_method_call(ka, "doRegister", "as", (action_id,))
+                )
+                # SetForeignShortcut overrides stale kglobalshortcutsrc entries, then
+                # SetPresent (0x2) | NoAutoloading (0x4) = 6 activates KWin/X11 grabbing.
+                conn.send_and_get_reply(
+                    new_method_call(ka, "setForeignShortcut", "asai", (action_id, [kc]))
+                )
+                conn.send_and_get_reply(
+                    new_method_call(ka, "setShortcut", "asaiu", (action_id, [kc], 6))
+                )
+                self.backend_status.emit(
+                    f"Atajo global KDE activo ({combo_str} · funciona dentro de juegos)"
+                )
+
+            last_bound = ""
+            with self._lock:
+                init_combo = self._combo
+                self._rebind_requested = False
+            _bind_kde_key(init_combo)
+            last_bound = init_combo
+
+            with conn.filter(rule) as q:
+                while not self._stop_requested:
+                    with self._lock:
+                        combo_str = self._combo
+                        do_bind = self._rebind_requested or self._portal_bind_requested or (combo_str != last_bound)
+                        self._rebind_requested = False
+                        self._portal_bind_requested = False
+                    if do_bind:
+                        try:
+                            _bind_kde_key(combo_str)
+                            last_bound = combo_str
+                        except Exception:
+                            pass
+                    try:
+                        msg = conn.recv_until_filtered(q, timeout=0.25)
+                        comp_u, sc_u, _ts = msg.body
+                        if comp_u == "xbox-antidrift-gui" and sc_u == "save_clip":
+                            self._emit_debounced_hotkey(f"Atajo global ({last_bound})")
+                    except TimeoutError:
+                        continue
+            return True
+        except Exception:
+            return False
+        finally:
+            try:
+                conn.send_and_get_reply(
+                    new_method_call(ka, "setInactive", "as", (action_id,))
+                )
+            except Exception:
+                pass
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    def _run_x11_loop(self, emit_status: bool = True) -> bool:
         """Poll X11 global keymap via libX11 XQueryKeymap (works inside fullscreen X11 games)."""
         try:
             x11 = ctypes.CDLL("libX11.so.6")
@@ -538,13 +754,13 @@ class GlobalHotkeyThread(QThread):
         mod_codes: list[tuple[int, ...]] = []
         main_code = 0
         was_main_down = False
-        last_fire = 0.0
 
         with self._lock:
             init_combo = self._combo
-        self.backend_status.emit(
-            f"Atajo global X11 activo ({init_combo} · funciona dentro de juegos)"
-        )
+        if emit_status:
+            self.backend_status.emit(
+                f"Atajo global X11 activo ({init_combo} · funciona dentro de juegos)"
+            )
 
         try:
             while not self._stop_requested:
@@ -564,10 +780,8 @@ class GlobalHotkeyThread(QThread):
                             any(_x11_keycode_pressed(raw_bytes, mkc) for mkc in grp)
                             for grp in mod_codes
                         )
-                        now = time.monotonic()
-                        if mods_ok and (now - last_fire >= 1.2):
-                            last_fire = now
-                            self.hotkey_triggered.emit(f"Teclado X11 ({combo})", 0)
+                        if mods_ok:
+                            self._emit_debounced_hotkey(f"Teclado X11 ({combo})")
                     was_main_down = is_down
 
                 time.sleep(0.025)

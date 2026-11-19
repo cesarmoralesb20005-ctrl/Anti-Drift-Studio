@@ -18,6 +18,186 @@ DEFAULT_SAFE_HOTKEY = "Alt+Shift+C"
 
 _TTY_HOTKEY_RE = re.compile(r"ctrl\+alt\+f([1-9]|1[0-2])$", re.IGNORECASE)
 
+PAD_TOKEN_ORDER: tuple[str, ...] = (
+    "GUIDE",
+    "SHARE",
+    "VIEW",
+    "MENU",
+    "LB",
+    "RB",
+    "LT",
+    "RT",
+    "LS",
+    "RS",
+    "UP",
+    "DOWN",
+    "LEFT",
+    "RIGHT",
+    "A",
+    "B",
+    "X",
+    "Y",
+    "P1",
+    "P2",
+    "P3",
+    "P4",
+    "TOUCHPAD",
+    "MUTE",
+)
+
+_PAD_ALIASES: dict[str, str] = {
+    "NONE": "none",
+    "NINGUNO": "none",
+    "SELECT": "VIEW",
+    "BACK": "VIEW",
+    "START": "MENU",
+    "OPTIONS": "MENU",
+    "HOME": "GUIDE",
+    "XBOX": "GUIDE",
+    "PS": "GUIDE",
+    "CAPTURA": "SHARE",
+    "CAPTURE": "SHARE",
+    "CREATE": "SHARE",
+    "KEY_167": "SHARE",
+    "BTN_167": "SHARE",
+    "L1": "LB",
+    "R1": "RB",
+    "L2": "LT",
+    "R2": "RT",
+    "L3": "LS",
+    "R3": "RS",
+    "ARRIBA": "UP",
+    "ABAJO": "DOWN",
+    "IZQUIERDA": "LEFT",
+    "DERECHA": "RIGHT",
+    "DPAD_UP": "UP",
+    "DPAD_DOWN": "DOWN",
+    "DPAD_LEFT": "LEFT",
+    "DPAD_RIGHT": "RIGHT",
+    "KEY_704": "P1",
+    "KEY_705": "P2",
+    "KEY_706": "P3",
+    "KEY_707": "P4",
+    "BTN_704": "P1",
+    "BTN_705": "P2",
+    "BTN_706": "P3",
+    "BTN_707": "P4",
+    "KEY_272": "TOUCHPAD",
+    "KEY_325": "TOUCHPAD",
+    "BTN_LEFT": "TOUCHPAD",
+    "KEY_248": "MUTE",
+    "KEY_712": "MUTE",
+}
+
+_EXTRA_CODE_TO_TOKEN: dict[int, str] = {
+    167: "SHARE",
+    248: "MUTE",
+    272: "TOUCHPAD",
+    325: "TOUCHPAD",
+    704: "P1",
+    705: "P2",
+    706: "P3",
+    707: "P4",
+    712: "MUTE",
+}
+
+_PAD_DISPLAY_NAMES: dict[str, str] = {
+    "VIEW": "View",
+    "MENU": "Menu",
+    "GUIDE": "Guía",
+    "SHARE": "Share / Captura",
+    "TOUCHPAD": "Touchpad",
+    "MUTE": "Mute",
+    "UP": "D-Pad ↑",
+    "DOWN": "D-Pad ↓",
+    "LEFT": "D-Pad ←",
+    "RIGHT": "D-Pad →",
+}
+
+
+def _pad_token_sort_key(tok: str) -> tuple[int, int, str]:
+    if tok in PAD_TOKEN_ORDER:
+        return (0, PAD_TOKEN_ORDER.index(tok), tok)
+    if tok.startswith("KEY_") and tok[4:].isdigit():
+        return (1, int(tok[4:]), tok)
+    return (2, 0, tok)
+
+
+def normalize_controller_shortcut(combo: str) -> str:
+    """Normalize a controller button chord string (e.g. 'RB + View' -> 'VIEW+RB')."""
+    raw = (combo or "").strip()
+    if not raw or raw.lower() in ("none", "ninguno"):
+        return "none"
+    tokens: set[str] = set()
+    for part in raw.split("+"):
+        u = part.strip().upper().replace(" ", "_")
+        if not u:
+            continue
+        u = _PAD_ALIASES.get(u, u)
+        if u == "none":
+            continue
+        if u.startswith("#") and u[1:].isdigit():
+            code = int(u[1:])
+            u = _EXTRA_CODE_TO_TOKEN.get(code, f"KEY_{code}")
+        elif u.startswith("BTN_") and u[4:].isdigit():
+            code = int(u[4:])
+            u = _EXTRA_CODE_TO_TOKEN.get(code, f"KEY_{code}")
+        elif u.isdigit():
+            code = int(u)
+            u = _EXTRA_CODE_TO_TOKEN.get(code, f"KEY_{code}")
+        tokens.add(u)
+    if not tokens:
+        return "none"
+    return "+".join(sorted(tokens, key=_pad_token_sort_key))
+
+
+def format_controller_shortcut_label(combo: str) -> str:
+    """Return user-friendly Spanish label for a controller shortcut."""
+    norm = normalize_controller_shortcut(combo)
+    if norm == "none":
+        return "Ninguno"
+    if norm == "P4":
+        return "Paddle P4"
+    parts = [_PAD_DISPLAY_NAMES.get(t, t) for t in norm.split("+")]
+    return " + ".join(parts)
+
+
+def extract_pressed_pad_tokens(state) -> list[str]:
+    """Extract canonical pressed button/trigger/dpad/extra tokens from ControllerState."""
+    pressed: set[str] = set()
+    for name, is_down in getattr(state, "buttons", {}).items():
+        if is_down:
+            u = str(name).strip().upper()
+            pressed.add(_PAD_ALIASES.get(u, u))
+    if getattr(state, "lt", 0) >= 600:
+        pressed.add("LT")
+    if getattr(state, "rt", 0) >= 600:
+        pressed.add("RT")
+    hx = getattr(state, "hat_x", 0)
+    hy = getattr(state, "hat_y", 0)
+    if hy < 0:
+        pressed.add("UP")
+    elif hy > 0:
+        pressed.add("DOWN")
+    if hx < 0:
+        pressed.add("LEFT")
+    elif hx > 0:
+        pressed.add("RIGHT")
+    for code, is_down in getattr(state, "extra_buttons", {}).items():
+        if is_down:
+            pressed.add(_EXTRA_CODE_TO_TOKEN.get(int(code), f"KEY_{int(code)}"))
+    return sorted(pressed, key=_pad_token_sort_key)
+
+
+def controller_shortcut_matches(shortcut: str, state) -> bool:
+    """Return True if all buttons in controller shortcut are currently pressed."""
+    norm = normalize_controller_shortcut(shortcut)
+    if norm == "none":
+        return False
+    required = set(norm.split("+"))
+    pressed = set(extract_pressed_pad_tokens(state))
+    return required.issubset(pressed)
+
 
 def is_tty_hotkey(combo: str) -> bool:
     """Return True if hotkey matches Linux virtual-terminal switch Ctrl+Alt+F1..F12."""
@@ -85,7 +265,7 @@ class ClipsConfig:
             voice_mic_source=(self.voice_mic_source or "").strip(),
             voice_cooldown_sec=max(1.5, min(30.0, float(self.voice_cooldown_sec))),
             hotkey_combo=sanitize_hotkey(self.hotkey_combo),
-            controller_shortcut=(self.controller_shortcut or "none").strip(),
+            controller_shortcut=normalize_controller_shortcut(self.controller_shortcut),
             sound_feedback=bool(self.sound_feedback),
         )
 

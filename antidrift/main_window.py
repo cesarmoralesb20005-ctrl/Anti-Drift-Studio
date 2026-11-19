@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 
 from PySide6.QtCore import QByteArray, QPointF, QRectF, QThread, QTimer, QUrl, Qt, Signal
 from PySide6.QtGui import QAction, QColor, QDesktopServices, QIcon, QPainter, QPen, QPixmap
@@ -36,7 +37,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .audio.eq_tab import EqTabWidget
 from .clips.clips_tab import ClipsTabWidget
+from .clips.desktop_notifier import DesktopClipNotifier
 from .config import (
     DEFAULT_CONFIG_PATH,
     DEFAULT_VIRTUAL_NAME,
@@ -282,8 +285,8 @@ QTabBar::tab {
     color: #94A3B8;
     border: 1px solid #1E2630;
     border-radius: 6px;
-    padding: 7px 14px;
-    margin-right: 6px;
+    padding: 7px 11px;
+    margin-right: 4px;
     font-weight: 600;
 }
 QTabBar::tab:hover {
@@ -347,6 +350,27 @@ QSlider::handle:horizontal {
 }
 QSlider::sub-page:horizontal {
     background: #059669;
+    border-radius: 2px;
+}
+QSlider::groove:vertical {
+    width: 5px;
+    background: #1E2630;
+    border-radius: 2px;
+}
+QSlider::handle:vertical {
+    background: #F8FAFC;
+    border: 2px solid #059669;
+    width: 14px;
+    height: 12px;
+    margin: 0 -5px;
+    border-radius: 6px;
+}
+QSlider::add-page:vertical {
+    background: #059669;
+    border-radius: 2px;
+}
+QSlider::sub-page:vertical {
+    background: #1E2630;
     border-radius: 2px;
 }
 QProgressBar {
@@ -468,6 +492,12 @@ class MainWindow(QMainWindow):
         self._force_quit = False
         self._start_reader = start_reader
         self._circ_dialog: CircularityTestDialog | None = None
+        self._last_notified_clip_path = ""
+        self._notifier: DesktopClipNotifier | None = None
+        if enable_tray or start_reader:
+            self._notifier = DesktopClipNotifier(self)
+            self._notifier.open_clip_requested.connect(self._on_open_clip_from_notification)
+            self._notifier.start()
 
         self._reader: ControllerReaderThread | None = None
         if start_reader:
@@ -523,6 +553,10 @@ class MainWindow(QMainWindow):
 
         self._status_timer.stop()
         self._profile_watch_timer.stop()
+        if self._notifier is not None:
+            self._notifier.stop()
+        if hasattr(self, "_eq_tab"):
+            self._eq_tab.shutdown()
         if hasattr(self, "_clips_tab"):
             self._clips_tab.shutdown()
         if hasattr(self, "_macros_tab"):
@@ -565,6 +599,9 @@ class MainWindow(QMainWindow):
             if reason == QSystemTrayIcon.Trigger
             else None
         )
+        tray.messageClicked.connect(
+            lambda: self._on_open_clip_from_notification(self._last_notified_clip_path, "")
+        )
         tray.show()
         self._tray = tray
 
@@ -604,18 +641,12 @@ class MainWindow(QMainWindow):
 
         lay.addWidget(B7MarkWidget(34))
 
-        title_col = QVBoxLayout()
-        title_col.setSpacing(1)
         title = QLabel(
             "Anti-Drift Studio <span style='color:#059669;'>■</span>"
         )
         title.setTextFormat(Qt.RichText)
         title.setObjectName("Title")
-        sub = QLabel("B7 SOFTWARE  ·  CONTROLADOR, MACROS Y CLIPS INSTANTÁNEOS")
-        sub.setObjectName("BrandTag")
-        title_col.addWidget(title)
-        title_col.addWidget(sub)
-        lay.addLayout(title_col)
+        lay.addWidget(title)
         lay.addStretch(1)
 
         self._update_btn = QPushButton("↑ Actualizar disponible")
@@ -624,10 +655,6 @@ class MainWindow(QMainWindow):
         self._update_btn.setToolTip("Hay una actualización en GitHub. Haz clic para instalarla.")
         self._update_btn.clicked.connect(self._on_apply_update_clicked)
         lay.addWidget(self._update_btn)
-
-        self._hw_pill = QLabel("Buscando mando...")
-        self._hw_pill.setObjectName("PillOff")
-        lay.addWidget(self._hw_pill)
 
         self._protect_btn = QPushButton("Protección: ...")
         self._protect_btn.setObjectName("ProtectToggleOff")
@@ -698,6 +725,11 @@ class MainWindow(QMainWindow):
         self._pad_switch_btn.setMenu(self._pad_switch_menu)
         top_row.addWidget(self._pad_switch_btn)
         c_lay.addLayout(top_row)
+
+        self._hw_pill = QLabel("Buscando mando...")
+        self._hw_pill.setObjectName("PillOff")
+        self._hw_pill.setAlignment(Qt.AlignCenter)
+        c_lay.addWidget(self._hw_pill)
 
         self._controller_widget = ControllerWidget()
         self._controller_widget.simulated_state_changed.connect(
@@ -786,12 +818,26 @@ class MainWindow(QMainWindow):
         self._macros_tab.preview_state_changed.connect(self._on_macro_preview_state)
         if self._reader is not None:
             self._reader.raw_key_detected.connect(self._macros_tab.on_raw_key_detected)
-        tabs.addTab(self._macros_tab, "Botones Extra y Macros")
+        tabs.addTab(self._macros_tab, "Macros")
         self._clips_tab = ClipsTabWidget(start_background=self._start_reader)
         self._clips_tab.clip_notification.connect(self._on_clip_notification)
-        clips_idx = tabs.addTab(self._clips_tab, "Clips y Momentos")
+        tabs.addTab(self._clips_tab, "Clips y Momentos")
+        clips_idx = tabs.indexOf(self._clips_tab)
+        self._eq_tab = EqTabWidget(start_background=self._start_reader)
+        tabs.addTab(self._eq_tab, "Sonido y EQ")
+        eq_idx = tabs.indexOf(self._eq_tab)
         tabs.addTab(self._build_settings_tab(), "Ajustes")
-        tabs.currentChanged.connect(lambda idx: prof_bar.setVisible(idx != clips_idx))
+
+        def _on_tab_changed(idx: int) -> None:
+            prof_bar.setVisible(idx not in (clips_idx, eq_idx))
+            if idx == eq_idx and self._start_reader:
+                self._eq_tab.refresh_audio_devices()
+                self._eq_tab.refresh_app_streams()
+
+        tabs.currentChanged.connect(_on_tab_changed)
+        self._main_tabs = tabs
+        self._clips_tab_idx = clips_idx
+        self._eq_tab_idx = eq_idx
         w_lay.addWidget(tabs, 1)
         return wrapper
 
@@ -1987,10 +2033,32 @@ class MainWindow(QMainWindow):
         if hasattr(self, "_clips_tab"):
             self._clips_tab.process_controller_state(state)
 
-    def _on_clip_notification(self, title: str, msg: str) -> None:
+    def _on_clip_notification(self, title: str, msg: str, clip_path: str = "") -> None:
         self.statusBar().showMessage(f"{title}: {msg}", 4500)
+        if clip_path:
+            self._last_notified_clip_path = clip_path
+        if self._notifier is not None:
+            nid = self._notifier.notify(title, msg, clip_path, timeout_ms=5000)
+            if nid is not None:
+                return
         if self._tray is not None and self._tray.isVisible():
-            self._tray.showMessage(title, msg, QSystemTrayIcon.Information, 2500)
+            self._tray.showMessage(title, msg, QSystemTrayIcon.Information, 3500)
+
+    def _on_open_clip_from_notification(
+        self, clip_path: str = "", activation_token: str = ""
+    ) -> None:
+        if activation_token:
+            os.environ["XDG_ACTIVATION_TOKEN"] = activation_token
+        self.setWindowState(
+            (self.windowState() & ~Qt.WindowMinimized) | Qt.WindowActive
+        )
+        self.show()
+        self.raise_()
+        self.activateWindow()
+        if hasattr(self, "_main_tabs") and hasattr(self, "_clips_tab_idx"):
+            self._main_tabs.setCurrentIndex(self._clips_tab_idx)
+        if clip_path and hasattr(self, "_clips_tab"):
+            self._clips_tab.select_clip_by_path(clip_path)
 
     def _on_macro_preview_state(self, state: ControllerState | None) -> None:
         self._controller_widget.set_macro_preview_state(state)

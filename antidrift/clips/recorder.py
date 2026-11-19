@@ -234,6 +234,7 @@ def has_saved_portal_session() -> bool:
 
 
 _VIRTUAL_AUDIO_MONITOR_HINTS = (
+    "antidrift_eq",
     "easyeffects",
     "pulseeffects",
     "jamesdsp",
