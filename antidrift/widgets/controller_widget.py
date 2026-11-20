@@ -1,4 +1,4 @@
-"""Multi-family b7software vector controller visualizer (Xbox, PlayStation, Switch Pro, Joy-Con)."""
+"""Multi-family b7software vector controller visualizer (Xbox, PlayStation, Switch Pro, Joy-Con, Wheel)."""
 
 from __future__ import annotations
 
@@ -17,7 +17,14 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QWidget
 
-from ..config import AXIS_MAX, AntiDriftConfig, TRIGGER_MAX, compute_corrected_stick
+from ..config import (
+    AXIS_MAX,
+    AntiDriftConfig,
+    TRIGGER_MAX,
+    compute_corrected_stick,
+    compute_wheel_pedal,
+    compute_wheel_steering,
+)
 from ..evdev_reader import ControllerState
 from ..macros import short_extra_badge
 
@@ -109,6 +116,22 @@ _SPECS: dict[str, _ControllerLayoutSpec] = {
         trigger_labels=("ZL", "ZR"),
         bumper_labels=("L", "R"),
     ),
+    "wheel": _ControllerLayoutSpec(
+        family="wheel",
+        l_stick=QPointF(300.0, 212.0),
+        r_stick=QPointF(300.0, 212.0),
+        dpad=QPointF(220.0, 212.0),
+        face_center=QPointF(378.0, 212.0),
+        guide=QPointF(300.0, 198.0),
+        view=QPointF(262.0, 258.0),
+        menu=QPointF(338.0, 258.0),
+        lb_rect=QRectF(80, 174, 58, 72),
+        rb_rect=QRectF(462, 174, 58, 72),
+        lt_rect=QRectF(168, 404, 118, 42),
+        rt_rect=QRectF(314, 404, 118, 42),
+        trigger_labels=("Freno", "Gas"),
+        bumper_labels=("L-", "R+"),
+    ),
 }
 
 
@@ -131,7 +154,7 @@ class ControllerWidget(QWidget):
         self._drag_target: str | None = None
 
     def set_family_override(self, family: str | None) -> None:
-        """Force preview family ('xbox'|'playstation'|'nintendo_pro'|'joycon') or None for Auto."""
+        """Force preview family ('xbox'|'playstation'|'nintendo_pro'|'joycon'|'wheel') or None."""
         self._family_override = family if family in _SPECS else None
         self.update()
 
@@ -191,7 +214,7 @@ class ControllerWidget(QWidget):
 
     def _face_buttons(self, spec: _ControllerLayoutSpec) -> dict[str, tuple[QPointF, str, QColor]]:
         cx, cy = spec.face_center.x(), spec.face_center.y()
-        d = 31.0 if spec.family == "joycon" else 34.0
+        d = 31.0 if spec.family in ("joycon", "wheel") else 34.0
         pos = {
             "Y": QPointF(cx, cy - d),
             "B": QPointF(cx + d, cy),
@@ -224,28 +247,54 @@ class ControllerWidget(QWidget):
     def _emit_sim(self) -> None:
         if not self._simulator_enabled:
             return
-        ox_l, oy_l = compute_corrected_stick(
-            self._state.raw_lx,
-            self._state.raw_ly,
-            self._config.center_lx,
-            self._config.center_ly,
-            self._config.dz_l,
-            self._config.response_curve,
-            self._config.dz_mode,
-            self._config.outer_comp_l,
-        )
-        ox_r, oy_r = compute_corrected_stick(
-            self._state.raw_rx,
-            self._state.raw_ry,
-            self._config.center_rx,
-            self._config.center_ry,
-            self._config.dz_r,
-            self._config.response_curve,
-            self._config.dz_mode,
-            self._config.outer_comp_r,
-        )
-        self._state.out_lx, self._state.out_ly = ox_l, oy_l
-        self._state.out_rx, self._state.out_ry = ox_r, oy_r
+        if self.active_family() == "wheel":
+            self._state.out_lx = compute_wheel_steering(
+                self._state.raw_lx,
+                self._config.center_lx,
+                self._config.wheel_steer_dz,
+                self._config.wheel_steer_sat,
+                self._config.wheel_linearity,
+            )
+            self._state.out_ly = 0
+            self._state.out_rx = 0
+            self._state.out_ry = 0
+            self._state.lt = compute_wheel_pedal(
+                self._state.raw_lt,
+                self._config.wheel_dz_brake,
+                self._config.wheel_max_brake,
+                self._config.wheel_invert_brake,
+                self._config.hair_trigger,
+            )
+            self._state.rt = compute_wheel_pedal(
+                self._state.raw_rt,
+                self._config.wheel_dz_gas,
+                self._config.wheel_max_gas,
+                self._config.wheel_invert_gas,
+                self._config.hair_trigger,
+            )
+        else:
+            ox_l, oy_l = compute_corrected_stick(
+                self._state.raw_lx,
+                self._state.raw_ly,
+                self._config.center_lx,
+                self._config.center_ly,
+                self._config.dz_l,
+                self._config.response_curve,
+                self._config.dz_mode,
+                self._config.outer_comp_l,
+            )
+            ox_r, oy_r = compute_corrected_stick(
+                self._state.raw_rx,
+                self._state.raw_ry,
+                self._config.center_rx,
+                self._config.center_ry,
+                self._config.dz_r,
+                self._config.response_curve,
+                self._config.dz_mode,
+                self._config.outer_comp_r,
+            )
+            self._state.out_lx, self._state.out_ly = ox_l, oy_l
+            self._state.out_rx, self._state.out_ry = ox_r, oy_r
         self.update()
         self.simulated_state_changed.emit(self._state)
 
@@ -277,16 +326,17 @@ class ControllerWidget(QWidget):
         p = self._widget_to_logical(event.position())
         self._drag_target = None
 
-        for tag, center in (("L", spec.l_stick), ("R", spec.r_stick)):
-            if math.hypot(p.x() - center.x(), p.y() - center.y()) <= 44.0:
-                if event.button() == Qt.RightButton:
-                    key = "LS" if tag == "L" else "RS"
-                    self._state.buttons[key] = not self._state.buttons[key]
-                    self._emit_sim()
+        if spec.family != "wheel":
+            for tag, center in (("L", spec.l_stick), ("R", spec.r_stick)):
+                if math.hypot(p.x() - center.x(), p.y() - center.y()) <= 44.0:
+                    if event.button() == Qt.RightButton:
+                        key = "LS" if tag == "L" else "RS"
+                        self._state.buttons[key] = not self._state.buttons[key]
+                        self._emit_sim()
+                        return
+                    self._drag_target = tag
+                    self._update_sim_stick(tag, p)
                     return
-                self._drag_target = tag
-                self._update_sim_stick(tag, p)
-                return
 
         hit_targets = [
             ("GUIDE", spec.guide, 19.0),
@@ -312,11 +362,17 @@ class ControllerWidget(QWidget):
             return
 
         if spec.lt_rect.adjusted(-4, -4, 4, 4).contains(p):
-            self._state.lt = TRIGGER_MAX if self._state.lt < 500 else 0
+            if spec.family == "wheel":
+                self._state.raw_lt = TRIGGER_MAX if self._state.raw_lt < 500 else 0
+            else:
+                self._state.lt = TRIGGER_MAX if self._state.lt < 500 else 0
             self._emit_sim()
             return
         if spec.rt_rect.adjusted(-4, -4, 4, 4).contains(p):
-            self._state.rt = TRIGGER_MAX if self._state.rt < 500 else 0
+            if spec.family == "wheel":
+                self._state.raw_rt = TRIGGER_MAX if self._state.raw_rt < 500 else 0
+            else:
+                self._state.rt = TRIGGER_MAX if self._state.rt < 500 else 0
             self._emit_sim()
             return
 
@@ -343,15 +399,25 @@ class ControllerWidget(QWidget):
             self._state.hat_x = -1 if dx < -13 else (1 if dx > 13 else 0)
             self._state.hat_y = -1 if dy < -13 else (1 if dy > 13 else 0)
             self._emit_sim()
+            return
+
+        if spec.family == "wheel":
+            wheel_r = math.hypot(p.x() - 300.0, p.y() - 212.0)
+            if wheel_r <= 172.0:
+                self._drag_target = "WHEEL"
+                self._update_sim_wheel(p)
 
     def mouseMoveEvent(self, event) -> None:
-        if self._simulator_enabled and self._drag_target in ("L", "R"):
+        if self._simulator_enabled and self._drag_target in ("L", "R", "WHEEL"):
             p = self._widget_to_logical(event.position())
-            self._update_sim_stick(self._drag_target, p)
+            if self._drag_target == "WHEEL":
+                self._update_sim_wheel(p)
+            else:
+                self._update_sim_stick(self._drag_target, p)
 
     def mouseReleaseEvent(self, event) -> None:
-        if self._simulator_enabled and self._drag_target in ("L", "R"):
-            if self._drag_target == "L":
+        if self._simulator_enabled and self._drag_target in ("L", "R", "WHEEL"):
+            if self._drag_target in ("L", "WHEEL"):
                 self._state.raw_lx = self._config.center_lx
                 self._state.raw_ly = self._config.center_ly
             else:
@@ -359,6 +425,12 @@ class ControllerWidget(QWidget):
                 self._state.raw_ry = self._config.center_ry
             self._drag_target = None
             self._emit_sim()
+
+    def _update_sim_wheel(self, p: QPointF) -> None:
+        nx = max(-1.0, min(1.0, (p.x() - 300.0) / 145.0))
+        self._state.raw_lx = round(nx * AXIS_MAX)
+        self._state.raw_ly = 0
+        self._emit_sim()
 
     def _update_sim_stick(self, tag: str, p: QPointF) -> None:
         spec = self._layout_spec()
@@ -388,28 +460,29 @@ class ControllerWidget(QWidget):
         self._draw_center_cluster(painter, spec)
         self._draw_dpad(painter, spec)
         self._draw_face_buttons(painter, spec)
-        self._draw_stick(
-            painter,
-            spec.l_stick,
-            "L",
-            self._state.raw_lx,
-            self._state.raw_ly,
-            self._state.out_lx,
-            self._state.out_ly,
-            self._config.dz_l,
-            self._state.buttons.get("LS", False),
-        )
-        self._draw_stick(
-            painter,
-            spec.r_stick,
-            "R",
-            self._state.raw_rx,
-            self._state.raw_ry,
-            self._state.out_rx,
-            self._state.out_ry,
-            self._config.dz_r,
-            self._state.buttons.get("RS", False),
-        )
+        if spec.family != "wheel":
+            self._draw_stick(
+                painter,
+                spec.l_stick,
+                "L",
+                self._state.raw_lx,
+                self._state.raw_ly,
+                self._state.out_lx,
+                self._state.out_ly,
+                self._config.dz_l,
+                self._state.buttons.get("LS", False),
+            )
+            self._draw_stick(
+                painter,
+                spec.r_stick,
+                "R",
+                self._state.raw_rx,
+                self._state.raw_ry,
+                self._state.out_rx,
+                self._state.out_ry,
+                self._config.dz_r,
+                self._state.buttons.get("RS", False),
+            )
         self._draw_extra_buttons(painter)
 
     def _draw_triggers_and_bumpers(
@@ -512,7 +585,92 @@ class ControllerWidget(QWidget):
         b.closeSubpath()
         return b
 
+    def _draw_wheel_shell(self, p: QPainter, _spec: _ControllerLayoutSpec) -> None:
+        cx, cy = 300.0, 212.0
+        half_deg = max(90.0, float(self._config.wheel_rotation_deg) * 0.5)
+        raw_norm = max(-1.0, min(1.0, float(self._state.raw_lx) / float(AXIS_MAX)))
+        out_norm = max(-1.0, min(1.0, float(self._state.out_lx) / float(AXIS_MAX)))
+        raw_deg = raw_norm * half_deg
+        out_deg = out_norm * half_deg
+
+        # Top telemetry arc & degree readout
+        p.setPen(QColor("#94A3B8"))
+        p.setFont(QFont("JetBrains Mono", 10, QFont.Bold))
+        sign_str = "+" if out_deg >= 0.5 else ""
+        p.drawText(
+            QRectF(170, 12, 260, 26),
+            Qt.AlignCenter,
+            f"GIRO {sign_str}{out_deg:.0f}°  ({self._config.wheel_rotation_deg}°)",
+        )
+
+        # Steering deadzone arc indicator above rim
+        dz_deg = self._config.wheel_steer_dz * half_deg
+        if dz_deg > 0.5:
+            p.setPen(QPen(QColor(16, 185, 129, 135), 4.0, Qt.SolidLine, Qt.RoundCap))
+            p.setBrush(Qt.NoBrush)
+            p.drawArc(
+                QRectF(cx - 166, cy - 166, 332, 332),
+                int((90.0 - dz_deg) * 16),
+                int((2.0 * dz_deg) * 16),
+            )
+
+        # Drop shadow under wheel
+        p.save()
+        p.translate(0, 6)
+        p.setPen(QPen(QColor(0, 0, 0, 95), 32.0))
+        p.setBrush(Qt.NoBrush)
+        p.drawEllipse(QPointF(cx, cy), 138.0, 138.0)
+        p.restore()
+
+        # Center hub + 3 Ferrari/GT spokes
+        spokes = QPainterPath()
+        spokes.addRoundedRect(QRectF(cx - 126, cy - 42, 252, 84), 22, 22)
+        spokes.addRoundedRect(QRectF(cx - 42, cy + 12, 84, 122), 18, 18)
+        hub_grad = QLinearGradient(cx, cy - 45, cx, cy + 135)
+        hub_grad.setColorAt(0.0, QColor("#18202A"))
+        hub_grad.setColorAt(1.0, QColor("#0B0E12"))
+        p.setPen(QPen(QColor("#2A3544"), 1.6))
+        p.setBrush(hub_grad)
+        p.drawPath(spokes)
+
+        # Rotated outer steering rim & top 12-o'clock center marker
+        p.save()
+        p.translate(cx, cy)
+        p.rotate(out_deg)
+        p.setPen(QPen(QColor("#11161C"), 30.0))
+        p.setBrush(Qt.NoBrush)
+        p.drawEllipse(QPointF(0, 0), 138.0, 138.0)
+
+        p.setPen(QPen(QColor("#2A3544"), 2.0))
+        p.drawEllipse(QPointF(0, 0), 153.0, 153.0)
+        p.drawEllipse(QPointF(0, 0), 123.0, 123.0)
+
+        # Racing top-center stripe (turns green/emerald while turning, crimson at rest)
+        stripe_col = QColor("#10B981") if abs(out_norm) > 0.015 else QColor("#EF4444")
+        p.setPen(Qt.NoPen)
+        p.setBrush(stripe_col)
+        p.drawRoundedRect(QRectF(-7.0, -153.0, 14.0, 30.0), 4, 4)
+        p.restore()
+
+        # Raw ghost needle vs clean active needle at top rim reference
+        if self._state.mode != "disconnected":
+            raw_rad = math.radians(raw_deg - 90.0)
+            out_rad = math.radians(out_deg - 90.0)
+            p.setPen(QPen(QColor(244, 63, 94, 165), 2.5, Qt.DashLine))
+            p.drawLine(
+                QPointF(cx + 124.0 * math.cos(raw_rad), cy + 124.0 * math.sin(raw_rad)),
+                QPointF(cx + 165.0 * math.cos(raw_rad), cy + 165.0 * math.sin(raw_rad)),
+            )
+            p.setPen(QPen(QColor("#34D399"), 3.0))
+            p.drawLine(
+                QPointF(cx + 122.0 * math.cos(out_rad), cy + 122.0 * math.sin(out_rad)),
+                QPointF(cx + 168.0 * math.cos(out_rad), cy + 168.0 * math.sin(out_rad)),
+            )
+
     def _draw_shell(self, p: QPainter, spec: _ControllerLayoutSpec) -> None:
+        if spec.family == "wheel":
+            self._draw_wheel_shell(p, spec)
+            return
         if spec.family == "joycon":
             self._draw_joycon_shell(p)
             return
@@ -665,6 +823,10 @@ class ControllerWidget(QWidget):
             p.setPen(QColor("#FFFFFF") if g_pressed else QColor("#94A3B8"))
             p.setFont(QFont("JetBrains Mono", 8, QFont.Bold))
             p.drawText(QRectF(gc.x() - 14, gc.y() - 10, 28, 20), Qt.AlignCenter, "PS")
+        elif spec.family == "wheel":
+            p.setPen(QColor("#FFFFFF") if g_pressed else QColor("#EF4444"))
+            p.setFont(QFont("JetBrains Mono", 8.5, QFont.Bold))
+            p.drawText(QRectF(gc.x() - 14, gc.y() - 10, 28, 20), Qt.AlignCenter, "GT")
         else:
             # Nintendo Home icon
             p.setPen(QColor("#FFFFFF") if g_pressed else QColor("#94A3B8"))
@@ -674,7 +836,7 @@ class ControllerWidget(QWidget):
         # View/Menu (or Create/Options, -/+)
         labels = (
             ("⧉", "☰")
-            if spec.family in ("xbox", "playstation")
+            if spec.family in ("xbox", "playstation", "wheel")
             else ("−", "+")
         )
         for key, center, symbol in (

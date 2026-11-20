@@ -30,6 +30,18 @@ class GameProfile:
     debounce_ms: int = 0
     rumble_gain: int = 100
     swap_nintendo: bool = False
+    wheel_mode: str = "auto"
+    wheel_rotation_deg: int = 270
+    wheel_steer_dz: float = 0.02
+    wheel_steer_sat: float = 1.00
+    wheel_linearity: float = 1.00
+    wheel_dz_gas: float = 0.03
+    wheel_dz_brake: float = 0.04
+    wheel_max_gas: float = 1.00
+    wheel_max_brake: float = 1.00
+    wheel_invert_gas: bool = False
+    wheel_invert_brake: bool = False
+    wheel_combined_pedals: bool = False
 
     def copy(self) -> GameProfile:
         return replace(self)
@@ -53,6 +65,18 @@ class GameProfile:
             debounce_ms=cfg.debounce_ms,
             rumble_gain=cfg.rumble_gain,
             swap_nintendo=cfg.swap_nintendo,
+            wheel_mode=cfg.wheel_mode,
+            wheel_rotation_deg=cfg.wheel_rotation_deg,
+            wheel_steer_dz=cfg.wheel_steer_dz,
+            wheel_steer_sat=cfg.wheel_steer_sat,
+            wheel_linearity=cfg.wheel_linearity,
+            wheel_dz_gas=cfg.wheel_dz_gas,
+            wheel_dz_brake=cfg.wheel_dz_brake,
+            wheel_max_gas=cfg.wheel_max_gas,
+            wheel_max_brake=cfg.wheel_max_brake,
+            wheel_invert_gas=cfg.wheel_invert_gas,
+            wheel_invert_brake=cfg.wheel_invert_brake,
+            wheel_combined_pedals=cfg.wheel_combined_pedals,
         )
 
     def apply_to_config(self, base: AntiDriftConfig) -> AntiDriftConfig:
@@ -76,6 +100,18 @@ class GameProfile:
             multi_controller=base.multi_controller,
             device_path=base.device_path,
             virtual_name=base.virtual_name,
+            wheel_mode=self.wheel_mode,
+            wheel_rotation_deg=self.wheel_rotation_deg,
+            wheel_steer_dz=self.wheel_steer_dz,
+            wheel_steer_sat=self.wheel_steer_sat,
+            wheel_linearity=self.wheel_linearity,
+            wheel_dz_gas=self.wheel_dz_gas,
+            wheel_dz_brake=self.wheel_dz_brake,
+            wheel_max_gas=self.wheel_max_gas,
+            wheel_max_brake=self.wheel_max_brake,
+            wheel_invert_gas=self.wheel_invert_gas,
+            wheel_invert_brake=self.wheel_invert_brake,
+            wheel_combined_pedals=self.wheel_combined_pedals,
         ).clamped()
 
 
@@ -138,6 +174,25 @@ def default_profiles() -> list[GameProfile]:
             hair_trigger=True,
             debounce_ms=0,
         ),
+        GameProfile(
+            id="racing_wheel",
+            name="Volante Racing (T80 / Sim)",
+            auto_process="",
+            dz_l=0.02,
+            dz_r=0.02,
+            dz_mode="axial",
+            low_latency=True,
+            response_curve=1.00,
+            hair_trigger=False,
+            debounce_ms=0,
+            wheel_mode="wheel",
+            wheel_rotation_deg=270,
+            wheel_steer_dz=0.02,
+            wheel_steer_sat=1.00,
+            wheel_linearity=1.00,
+            wheel_dz_gas=0.03,
+            wheel_dz_brake=0.04,
+        ),
     ]
 
 
@@ -169,6 +224,18 @@ def load_profile_store(path: Path = DEFAULT_PROFILES_PATH) -> ProfileStore:
                 debounce_ms=int(item.get("debounce_ms", 0)),
                 rumble_gain=int(item.get("rumble_gain", 100)),
                 swap_nintendo=bool(item.get("swap_nintendo", False)),
+                wheel_mode=str(item.get("wheel_mode", "auto")),
+                wheel_rotation_deg=int(item.get("wheel_rotation_deg", 270)),
+                wheel_steer_dz=float(item.get("wheel_steer_dz", 0.02)),
+                wheel_steer_sat=float(item.get("wheel_steer_sat", 1.00)),
+                wheel_linearity=float(item.get("wheel_linearity", 1.00)),
+                wheel_dz_gas=float(item.get("wheel_dz_gas", 0.03)),
+                wheel_dz_brake=float(item.get("wheel_dz_brake", 0.04)),
+                wheel_max_gas=float(item.get("wheel_max_gas", 1.00)),
+                wheel_max_brake=float(item.get("wheel_max_brake", 1.00)),
+                wheel_invert_gas=bool(item.get("wheel_invert_gas", False)),
+                wheel_invert_brake=bool(item.get("wheel_invert_brake", False)),
+                wheel_combined_pedals=bool(item.get("wheel_combined_pedals", False)),
             )
             for idx, item in enumerate(raw_profiles)
         ]

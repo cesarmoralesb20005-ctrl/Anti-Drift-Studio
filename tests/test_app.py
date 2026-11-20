@@ -388,7 +388,7 @@ class ServiceAndUiTests(unittest.TestCase):
         self.assertIn("250 Hz", win._hz_badge.text())
         self.assertIn("P1", win._active_buttons_label.text())
         self.assertEqual(win._controller_widget.active_family(), "playstation")
-        for fam in ("xbox", "playstation", "nintendo_pro", "joycon"):
+        for fam in ("xbox", "playstation", "nintendo_pro", "joycon", "wheel"):
             win._set_preview_family(fam)
             self._app.processEvents()
             win._controller_widget.grab()
@@ -402,6 +402,35 @@ class ServiceAndUiTests(unittest.TestCase):
         win._rumble_slider.setValue(60)
         win._swap_nintendo_chk.setChecked(True)
         self._app.processEvents()
+
+        # Verify steering wheel card UI & live wheel state updates
+        win._on_controller_state(
+            ControllerState(
+                mode="virtual",
+                controller_family="wheel",
+                is_wheel=True,
+                physical_name="Thrustmaster T80 Ferrari",
+                physical_vid_pid="044f:b668",
+                physical_stable_id="044f:b668|wheel-test",
+                out_lx=16384,
+                lt=0,
+                rt=820,
+                poll_hz=250.0,
+            )
+        )
+        self._app.processEvents()
+        self.assertTrue(win._wheel_toggle.isChecked())
+        self.assertEqual(win._family_btn.text(), "Auto: Volante ▾")
+        self.assertIn("Giro", win._active_buttons_label.text())
+        self.assertIn("Gas", win._active_buttons_label.text())
+        win._wheel_rot_btns[240].click()
+        self.assertEqual(win._config.wheel_rotation_deg, 240)
+        win._wheel_inv_gas_chk.setChecked(True)
+        self.assertTrue(win._config.wheel_invert_gas)
+        win._wheel_combo_chk.setChecked(True)
+        self.assertTrue(win._config.wheel_combined_pedals)
+        win._wheel_inv_gas_chk.setChecked(False)
+        win._wheel_combo_chk.setChecked(False)
 
         self.assertAlmostEqual(win._config.outer_comp_l, 0.14, places=2)
         self.assertEqual(win._config.debounce_ms, 18)
@@ -1017,6 +1046,228 @@ class ClipsSubsystemTests(unittest.TestCase):
             detect_controller_family("Generic USB Gamepad", "1234:5678"),
             "xbox",
         )
+        self.assertEqual(
+            detect_controller_family("Thrustmaster T80 Ferrari Racing Wheel", "044f:b668"),
+            "wheel",
+        )
+        self.assertEqual(
+            detect_controller_family("Logitech G29 Driving Force Racing Wheel", "046d:c24f"),
+            "wheel",
+        )
+        self.assertEqual(
+            detect_controller_family("Fanatec CSL Elite Wheel Base", "0eb7:0e03"),
+            "wheel",
+        )
+
+
+class SteeringWheelTests(unittest.TestCase):
+    def test_wheel_config_roundtrip_math_and_profile(self) -> None:
+        from antidrift.config import (
+            AntiDriftConfig,
+            compute_wheel_pedal,
+            compute_wheel_steering,
+            load_config,
+            save_config,
+            split_combined_pedals,
+        )
+        from antidrift.profiles import default_profiles
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_path = Path(tmp) / "wheel.conf"
+            cfg = AntiDriftConfig(
+                center_lx=420,
+                wheel_mode="wheel",
+                wheel_rotation_deg=240,
+                wheel_steer_dz=0.05,
+                wheel_steer_sat=0.80,
+                wheel_linearity=1.25,
+                wheel_dz_gas=0.04,
+                wheel_dz_brake=0.06,
+                wheel_max_gas=0.90,
+                wheel_max_brake=0.85,
+                wheel_invert_gas=True,
+                wheel_invert_brake=False,
+                wheel_combined_pedals=True,
+            )
+            save_config(cfg, path=cfg_path)
+            loaded = load_config(path=cfg_path)
+            self.assertEqual(loaded.wheel_mode, "wheel")
+            self.assertEqual(loaded.wheel_rotation_deg, 240)
+            self.assertAlmostEqual(loaded.wheel_steer_dz, 0.05, places=3)
+            self.assertAlmostEqual(loaded.wheel_steer_sat, 0.80, places=2)
+            self.assertAlmostEqual(loaded.wheel_linearity, 1.25, places=2)
+            self.assertAlmostEqual(loaded.wheel_dz_gas, 0.04, places=3)
+            self.assertAlmostEqual(loaded.wheel_dz_brake, 0.06, places=3)
+            self.assertAlmostEqual(loaded.wheel_max_gas, 0.90, places=2)
+            self.assertAlmostEqual(loaded.wheel_max_brake, 0.85, places=2)
+            self.assertTrue(loaded.wheel_invert_gas)
+            self.assertFalse(loaded.wheel_invert_brake)
+            self.assertTrue(loaded.wheel_combined_pedals)
+
+        self.assertEqual(compute_wheel_steering(420, 420, 0.05, 1.0, 1.0), 0)
+        self.assertEqual(compute_wheel_steering(26500, 0, 0.05, 0.80, 1.0), 32767)
+        self.assertEqual(compute_wheel_steering(-26500, 0, 0.05, 0.80, 1.0), -32767)
+        lin_mid = compute_wheel_steering(16384, 0, 0.0, 1.0, 1.0)
+        soft_mid = compute_wheel_steering(16384, 0, 0.0, 1.0, 1.5)
+        self.assertLess(soft_mid, lin_mid)
+
+        self.assertEqual(compute_wheel_pedal(20, dz=0.05), 0)
+        self.assertEqual(compute_wheel_pedal(900, dz=0.0, max_reach=0.80), 1023)
+        self.assertEqual(compute_wheel_pedal(1023, dz=0.03, invert=True), 0)
+        self.assertEqual(compute_wheel_pedal(0, dz=0.03, invert=True), 1023)
+        self.assertEqual(compute_wheel_pedal(200, dz=0.0, hair_trigger=True), 1023)
+
+        self.assertEqual(split_combined_pedals(0), (0, 0))
+        self.assertEqual(split_combined_pedals(-32768), (0, 1023))
+        self.assertEqual(split_combined_pedals(32767), (1023, 0))
+        self.assertEqual(split_combined_pedals(-32768, swap_polarity=True), (1023, 0))
+
+        profs = {p.id: p for p in default_profiles()}
+        self.assertIn("racing_wheel", profs)
+        wprof = profs["racing_wheel"]
+        self.assertEqual(wprof.wheel_mode, "wheel")
+        self.assertEqual(wprof.wheel_rotation_deg, 270)
+        applied = wprof.apply_to_config(AntiDriftConfig())
+        self.assertEqual(applied.wheel_mode, "wheel")
+        self.assertEqual(applied.wheel_rotation_deg, 270)
+
+    def test_wheel_hardware_probe_separate_and_combined(self) -> None:
+        from unittest.mock import patch
+        from antidrift import evdev_reader as er
+
+        self.assertEqual(er.GENERIC_JOY_BUTTON_MAP[300], "GUIDE")
+        self.assertEqual(er.WHEEL_SHIFTER_MAP[er.BTN_GEAR_DOWN], "LB")
+        self.assertEqual(er.WHEEL_SHIFTER_MAP[er.BTN_GEAR_UP], "RB")
+
+        def _make_fake_ioctl(abs_codes: set[int], key_codes: set[int]):
+            def fake_ioctl(_fd, req, buf):
+                if req == er.EVIOCGBIT_ABS_8:
+                    for c in abs_codes:
+                        buf[c >> 3] |= 1 << (c & 7)
+                    return len(buf)
+                if req == er.EVIOCGBIT_KEY_96:
+                    for c in key_codes:
+                        buf[c >> 3] |= 1 << (c & 7)
+                    return len(buf)
+                return 0
+
+            return fake_ioctl
+
+        with (
+            patch.object(
+                er.fcntl,
+                "ioctl",
+                side_effect=_make_fake_ioctl(
+                    {er.ABS_X, er.ABS_GAS, er.ABS_BRAKE, er.ABS_HAT0X},
+                    {er.BTN_TRIGGER, er.BTN_GEAR_DOWN, er.BTN_GEAR_UP},
+                ),
+            ),
+            patch.object(er, "read_abs_info", return_value=None),
+        ):
+            hm = er.probe_hardware_map(99, "Thrustmaster T80 Ferrari")
+        self.assertTrue(hm.is_wheel)
+        self.assertEqual(hm.lx_code, er.ABS_X)
+        self.assertEqual(hm.ly_code, -1)
+        self.assertEqual(hm.rt_code, er.ABS_GAS)
+        self.assertEqual(hm.lt_code, er.ABS_BRAKE)
+        self.assertEqual(hm.combo_pedal_code, -1)
+        self.assertTrue(hm.use_generic_joy_btns)
+        self.assertTrue(hm.wheel_use_gear_shifters)
+
+        with (
+            patch.object(
+                er.fcntl,
+                "ioctl",
+                side_effect=_make_fake_ioctl(
+                    {er.ABS_X, er.ABS_Y, er.ABS_HAT0X},
+                    {er.BTN_SOUTH},
+                ),
+            ),
+            patch.object(er, "read_abs_info", return_value=None),
+        ):
+            hm_combo = er.probe_hardware_map(99, "Thrustmaster T80 Combined")
+        self.assertTrue(hm_combo.is_wheel)
+        self.assertEqual(hm_combo.lx_code, er.ABS_X)
+        self.assertEqual(hm_combo.ly_code, -1)
+        self.assertEqual(hm_combo.combo_pedal_code, er.ABS_Y)
+
+    def test_wheel_visualizer_simulator_and_main_window_controls(self) -> None:
+        from PySide6.QtCore import QPointF, Qt
+        from PySide6.QtGui import QMouseEvent
+        from PySide6.QtWidgets import QApplication
+        from antidrift.config import AntiDriftConfig
+        from antidrift.evdev_reader import ControllerState
+        from antidrift.widgets.controller_widget import ControllerWidget, _SPECS
+
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        app = QApplication.instance() or QApplication([])
+
+        w = ControllerWidget()
+        w.resize(600, 492)
+        w.set_family_override("wheel")
+        w.set_config_preview(AntiDriftConfig(wheel_mode="wheel", wheel_rotation_deg=240))
+        w.set_simulator_enabled(True)
+
+        scale, ox, oy = w._transform_params()
+        spec = _SPECS["wheel"]
+
+        def _logical_to_widget(pt: QPointF) -> QPointF:
+            return QPointF(ox + pt.x() * scale, oy + pt.y() * scale)
+
+        wheel_right = _logical_to_widget(QPointF(438.0, 212.0))
+        press_ev = QMouseEvent(
+            QMouseEvent.MouseButtonPress,
+            wheel_right,
+            wheel_right,
+            Qt.LeftButton,
+            Qt.LeftButton,
+            Qt.NoModifier,
+        )
+        w.mousePressEvent(press_ev)
+        self.assertGreater(w._state.raw_lx, 15000)
+        self.assertGreater(w._state.out_lx, 15000)
+
+        rel_ev = QMouseEvent(
+            QMouseEvent.MouseButtonRelease,
+            wheel_right,
+            wheel_right,
+            Qt.LeftButton,
+            Qt.NoButton,
+            Qt.NoModifier,
+        )
+        w.mouseReleaseEvent(rel_ev)
+        self.assertEqual(w._state.raw_lx, 0)
+        self.assertEqual(w._state.out_lx, 0)
+
+        gas_pt = _logical_to_widget(spec.rt_rect.center())
+        w.mousePressEvent(
+            QMouseEvent(
+                QMouseEvent.MouseButtonPress,
+                gas_pt,
+                gas_pt,
+                Qt.LeftButton,
+                Qt.LeftButton,
+                Qt.NoModifier,
+            )
+        )
+        self.assertEqual(w._state.raw_rt, 1023)
+        self.assertEqual(w._state.rt, 1023)
+        w.grab()
+
+        st = ControllerState(
+            mode="virtual",
+            controller_family="wheel",
+            is_wheel=True,
+            physical_name="Thrustmaster T80 Ferrari",
+            out_lx=16384,
+            lt=0,
+            rt=800,
+        )
+        w.set_simulator_enabled(False)
+        w.set_controller_state(st)
+        self.assertEqual(w.active_family(), "wheel")
+        w.grab()
+        app.processEvents()
 
 
 class UpdaterTests(unittest.TestCase):

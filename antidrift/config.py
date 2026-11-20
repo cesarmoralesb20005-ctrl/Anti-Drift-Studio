@@ -16,6 +16,7 @@ ENV_CONFIG_PATH = Path.home() / ".config" / "environment.d" / "xbox-antidrift.co
 DEFAULT_VIRTUAL_NAME = "Microsoft X-Box 360 pad"
 
 VALID_DZ_MODES = ("axial", "radial", "hybrid")
+VALID_WHEEL_MODES = ("auto", "wheel", "gamepad")
 
 
 def sanitize_virtual_name(name: str | None) -> str:
@@ -51,6 +52,18 @@ class AntiDriftConfig:
     multi_controller: bool = True
     device_path: str = "auto"
     virtual_name: str = DEFAULT_VIRTUAL_NAME
+    wheel_mode: str = "auto"  # "auto" | "wheel" | "gamepad"
+    wheel_rotation_deg: int = 270
+    wheel_steer_dz: float = 0.02
+    wheel_steer_sat: float = 1.00
+    wheel_linearity: float = 1.00
+    wheel_dz_gas: float = 0.03
+    wheel_dz_brake: float = 0.04
+    wheel_max_gas: float = 1.00
+    wheel_max_brake: float = 1.00
+    wheel_invert_gas: bool = False
+    wheel_invert_brake: bool = False
+    wheel_combined_pedals: bool = False
 
     def copy(self) -> AntiDriftConfig:
         """Return a shallow copy of the configuration."""
@@ -59,6 +72,7 @@ class AntiDriftConfig:
     def clamped(self) -> AntiDriftConfig:
         """Return a copy with fields clamped to safe operational bounds."""
         mode = self.dz_mode if self.dz_mode in VALID_DZ_MODES else "axial"
+        wmode = self.wheel_mode if self.wheel_mode in VALID_WHEEL_MODES else "auto"
         return AntiDriftConfig(
             center_lx=max(-28000, min(28000, int(self.center_lx))),
             center_ly=max(-28000, min(28000, int(self.center_ly))),
@@ -78,6 +92,18 @@ class AntiDriftConfig:
             multi_controller=bool(self.multi_controller),
             device_path=(self.device_path or "auto").strip(),
             virtual_name=sanitize_virtual_name(self.virtual_name),
+            wheel_mode=wmode,
+            wheel_rotation_deg=max(180, min(1080, int(self.wheel_rotation_deg))),
+            wheel_steer_dz=round(max(0.0, min(0.30, float(self.wheel_steer_dz))), 3),
+            wheel_steer_sat=round(max(0.25, min(1.00, float(self.wheel_steer_sat))), 2),
+            wheel_linearity=round(max(0.45, min(1.60, float(self.wheel_linearity))), 2),
+            wheel_dz_gas=round(max(0.0, min(0.35, float(self.wheel_dz_gas))), 3),
+            wheel_dz_brake=round(max(0.0, min(0.35, float(self.wheel_dz_brake))), 3),
+            wheel_max_gas=round(max(0.50, min(1.00, float(self.wheel_max_gas))), 2),
+            wheel_max_brake=round(max(0.50, min(1.00, float(self.wheel_max_brake))), 2),
+            wheel_invert_gas=bool(self.wheel_invert_gas),
+            wheel_invert_brake=bool(self.wheel_invert_brake),
+            wheel_combined_pedals=bool(self.wheel_combined_pedals),
         )
 
 
@@ -87,6 +113,12 @@ def _apply_kv_to_config(cfg: AntiDriftConfig, key: str, val_str: str) -> None:
         return
     if key == "virtual_name":
         cfg.virtual_name = sanitize_virtual_name(val_str)
+        return
+    if key == "wheel_mode":
+        if val_str in VALID_WHEEL_MODES:
+            cfg.wheel_mode = val_str
+        elif val_str in ("0", "1", "2"):
+            cfg.wheel_mode = VALID_WHEEL_MODES[int(val_str)]
         return
     if key == "dz_mode":
         if val_str in VALID_DZ_MODES:
@@ -128,6 +160,28 @@ def _apply_kv_to_config(cfg: AntiDriftConfig, key: str, val_str: str) -> None:
         cfg.swap_nintendo = bool(int(val))
     elif key == "multi_controller":
         cfg.multi_controller = bool(int(val))
+    elif key == "wheel_rotation_deg":
+        cfg.wheel_rotation_deg = int(val)
+    elif key == "wheel_steer_dz":
+        cfg.wheel_steer_dz = val
+    elif key == "wheel_steer_sat":
+        cfg.wheel_steer_sat = val
+    elif key == "wheel_linearity":
+        cfg.wheel_linearity = val
+    elif key == "wheel_dz_gas":
+        cfg.wheel_dz_gas = val
+    elif key == "wheel_dz_brake":
+        cfg.wheel_dz_brake = val
+    elif key == "wheel_max_gas":
+        cfg.wheel_max_gas = val
+    elif key == "wheel_max_brake":
+        cfg.wheel_max_brake = val
+    elif key == "wheel_invert_gas":
+        cfg.wheel_invert_gas = bool(int(val))
+    elif key == "wheel_invert_brake":
+        cfg.wheel_invert_brake = bool(int(val))
+    elif key == "wheel_combined_pedals":
+        cfg.wheel_combined_pedals = bool(int(val))
 
 
 def load_config(path: Path = DEFAULT_CONFIG_PATH) -> AntiDriftConfig:
@@ -164,6 +218,18 @@ def _format_config_lines(cfg: AntiDriftConfig, include_global_routing: bool = Tr
         f"rumble_gain = {clean.rumble_gain}",
         f"swap_nintendo = {1 if clean.swap_nintendo else 0}",
         f"virtual_name = {clean.virtual_name}",
+        f"wheel_mode = {clean.wheel_mode}",
+        f"wheel_rotation_deg = {clean.wheel_rotation_deg}",
+        f"wheel_steer_dz = {clean.wheel_steer_dz:.3f}",
+        f"wheel_steer_sat = {clean.wheel_steer_sat:.2f}",
+        f"wheel_linearity = {clean.wheel_linearity:.2f}",
+        f"wheel_dz_gas = {clean.wheel_dz_gas:.3f}",
+        f"wheel_dz_brake = {clean.wheel_dz_brake:.3f}",
+        f"wheel_max_gas = {clean.wheel_max_gas:.2f}",
+        f"wheel_max_brake = {clean.wheel_max_brake:.2f}",
+        f"wheel_invert_gas = {1 if clean.wheel_invert_gas else 0}",
+        f"wheel_invert_brake = {1 if clean.wheel_invert_brake else 0}",
+        f"wheel_combined_pedals = {1 if clean.wheel_combined_pedals else 0}",
     ]
     if include_global_routing:
         lines.append(f"multi_controller = {1 if clean.multi_controller else 0}")
@@ -350,3 +416,51 @@ def scale_trig_to_1023(raw: int, hw_min: int, hw_max: int) -> int:
         return 0
     frac = max(0.0, min(1.0, float(raw - hw_min) / float(hw_max - hw_min)))
     return round(frac * float(TRIGGER_MAX))
+
+
+def compute_wheel_steering(
+    raw_x: int,
+    center_x: int,
+    dz: float,
+    saturation: float = 1.0,
+    linearity: float = 1.0,
+) -> int:
+    """Compute centered, deadzoned, lock-scaled, and curve-shaped steering output."""
+    nx = normalize_axis(raw_x, center_x)
+    mag = abs(nx)
+    reach = max(dz + 0.05, min(1.0, float(saturation)))
+    if mag <= dz or dz >= 0.999:
+        return 0
+    scaled = min(1.0, (mag - dz) / (reach - dz))
+    if linearity != 1.0 and scaled > 0.0:
+        scaled = min(1.0, pow(scaled, linearity))
+    return _scalar_to_i16(-scaled if nx < 0.0 else scaled)
+
+
+def compute_wheel_pedal(
+    raw_val: int,
+    dz: float,
+    max_reach: float = 1.0,
+    invert: bool = False,
+    hair_trigger: bool = False,
+) -> int:
+    """Apply inversion, deadzone, saturation, and optional hair-trigger to a [0..1023] pedal."""
+    clamped_raw = max(0, min(TRIGGER_MAX, int(raw_val)))
+    v = (TRIGGER_MAX - clamped_raw) if invert else clamped_raw
+    frac = float(v) / float(TRIGGER_MAX)
+    reach = max(dz + 0.05, min(1.0, float(max_reach)))
+    if frac <= dz:
+        out = 0
+    else:
+        out = round(min(1.0, (frac - dz) / (reach - dz)) * float(TRIGGER_MAX))
+    return apply_hair_trigger(out, hair_trigger)
+
+
+def split_combined_pedals(raw_i16: int, swap_polarity: bool = False) -> tuple[int, int]:
+    """Split a single signed [-32768..32767] combined pedal axis into (brake_lt, gas_rt)."""
+    val = -int(raw_i16) if swap_polarity else int(raw_i16)
+    if val < 0:
+        gas = round(min(1.0, float(-val) / 32768.0) * float(TRIGGER_MAX))
+        return 0, gas
+    brake = round(min(1.0, float(val) / 32767.0) * float(TRIGGER_MAX))
+    return brake, 0

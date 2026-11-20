@@ -41,6 +41,7 @@ from .audio.eq_tab import EqTabWidget
 from .clips.clips_tab import ClipsTabWidget
 from .clips.desktop_notifier import DesktopClipNotifier
 from .config import (
+    AXIS_MAX,
     DEFAULT_CONFIG_PATH,
     DEFAULT_VIRTUAL_NAME,
     AntiDriftConfig,
@@ -703,6 +704,7 @@ class MainWindow(QMainWindow):
             ("playstation", "PlayStation (DualSense / PS4)"),
             ("nintendo_pro", "Nintendo Switch Pro"),
             ("joycon", "Nintendo Joy-Con"),
+            ("wheel", "Volante Racing (T80 / Sim)"),
         ):
             act = fam_menu.addAction(fam_lbl)
             act.triggered.connect(lambda _=False, fk=fam_key: self._set_preview_family(fk))
@@ -985,6 +987,19 @@ class MainWindow(QMainWindow):
         lat_lay.addLayout(resp_row)
         lay.addWidget(lat_card)
 
+        # Collapsible Steering Wheel & Pedals Configuration (T80 / Racing Sim)
+        self._wheel_toggle = QToolButton()
+        self._wheel_toggle.setText(
+            "▸ Volante y Pedales (Thrustmaster T80 / Sim Racing)"
+        )
+        self._wheel_toggle.setCheckable(True)
+        self._wheel_toggle.toggled.connect(self._on_toggle_wheel_card)
+        lay.addWidget(self._wheel_toggle)
+
+        self._wheel_card = self._build_wheel_card()
+        self._wheel_card.setVisible(False)
+        lay.addWidget(self._wheel_card)
+
         # Collapsible Advanced Controls (Outer Edge Anti-Slowturn, Debounce, Rumble, Manual Centers)
         self._adv_toggle = QToolButton()
         self._adv_toggle.setText(
@@ -1075,6 +1090,129 @@ class MainWindow(QMainWindow):
 
         outer.addWidget(footer)
         return tab
+
+    def _add_wheel_slider(
+        self,
+        grid: QGridLayout,
+        row: int,
+        label: str,
+        low: int,
+        high: int,
+        unit: str,
+        on_change,
+    ) -> tuple[QSlider, QLabel]:
+        grid.addWidget(QLabel(label), row, 0)
+        slider = QSlider(Qt.Horizontal)
+        slider.setRange(low, high)
+        val_lbl = QLabel(f"0{unit}")
+        val_lbl.setMinimumWidth(52)
+        val_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        slider.valueChanged.connect(on_change)
+        grid.addWidget(slider, row, 1, 1, 2)
+        grid.addWidget(val_lbl, row, 3)
+        return slider, val_lbl
+
+    def _build_wheel_card(self) -> QFrame:
+        card = QFrame()
+        card.setObjectName("Card")
+        wlay = QVBoxLayout(card)
+        wlay.setContentsMargins(14, 10, 14, 10)
+        wlay.setSpacing(8)
+
+        mode_row = QHBoxLayout()
+        mode_row.setSpacing(6)
+        mode_row.addWidget(QLabel("Modo volante:"))
+        self._wheel_mode_btns: dict[str, QPushButton] = {}
+        for mode_id, mlabel in (
+            ("auto", "Auto"),
+            ("wheel", "Forzar Volante"),
+            ("gamepad", "Gamepad"),
+        ):
+            btn = QPushButton(mlabel)
+            btn.setObjectName("MiniPill")
+            btn.setCheckable(True)
+            btn.clicked.connect(
+                lambda _=False, mid=mode_id: self._on_wheel_mode_selected(mid)
+            )
+            self._wheel_mode_btns[mode_id] = btn
+            mode_row.addWidget(btn)
+        mode_row.addStretch(1)
+        self._btn_center_wheel = QPushButton("Centrar volante")
+        self._btn_center_wheel.setObjectName("MiniPill")
+        self._btn_center_wheel.setToolTip(
+            "Guarda el ángulo actual del volante como centro exacto (0°)"
+        )
+        self._btn_center_wheel.clicked.connect(lambda: self._capture_raw_center("L"))
+        mode_row.addWidget(self._btn_center_wheel)
+        wlay.addLayout(mode_row)
+
+        rot_row = QHBoxLayout()
+        rot_row.setSpacing(6)
+        rot_row.addWidget(QLabel("Ángulo de giro:"))
+        self._wheel_rot_btns: dict[int, QPushButton] = {}
+        for deg, rlabel in (
+            (240, "240° (T80)"),
+            (270, "270° GT"),
+            (540, "540° Rally"),
+            (900, "900° Sim"),
+        ):
+            btn = QPushButton(rlabel)
+            btn.setObjectName("MiniPill")
+            btn.setCheckable(True)
+            btn.clicked.connect(
+                lambda _=False, d=deg: self._on_wheel_rot_selected(d)
+            )
+            self._wheel_rot_btns[deg] = btn
+            rot_row.addWidget(btn)
+        rot_row.addStretch(1)
+        wlay.addLayout(rot_row)
+
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(6)
+
+        self._wheel_steer_dz_slider, self._wheel_steer_dz_lbl = self._add_wheel_slider(
+            grid, 0, "Zona muerta dirección:", 0, 20, "%", self._on_wheel_steer_dz_changed
+        )
+        self._wheel_steer_sat_slider, self._wheel_steer_sat_lbl = self._add_wheel_slider(
+            grid, 1, "Tope giro (Saturación):", 35, 100, "%", self._on_wheel_steer_sat_changed
+        )
+        self._wheel_lin_slider, self._wheel_lin_lbl = self._add_wheel_slider(
+            grid, 2, "Linealidad giro:", 50, 150, "", self._on_wheel_lin_changed
+        )
+        self._wheel_dz_gas_slider, self._wheel_dz_gas_lbl = self._add_wheel_slider(
+            grid, 3, "Zona muerta acelerador:", 0, 25, "%", self._on_wheel_dz_gas_changed
+        )
+        self._wheel_max_gas_slider, self._wheel_max_gas_lbl = self._add_wheel_slider(
+            grid, 4, "Alcance máx acelerador:", 50, 100, "%", self._on_wheel_max_gas_changed
+        )
+        self._wheel_dz_brake_slider, self._wheel_dz_brake_lbl = self._add_wheel_slider(
+            grid, 5, "Zona muerta freno:", 0, 25, "%", self._on_wheel_dz_brake_changed
+        )
+        self._wheel_max_brake_slider, self._wheel_max_brake_lbl = self._add_wheel_slider(
+            grid, 6, "Alcance máx freno:", 50, 100, "%", self._on_wheel_max_brake_changed
+        )
+        wlay.addLayout(grid)
+
+        chk_row = QHBoxLayout()
+        chk_row.setSpacing(12)
+        self._wheel_inv_gas_chk = QCheckBox("Invertir acelerador")
+        self._wheel_inv_gas_chk.toggled.connect(self._on_wheel_inv_gas_changed)
+        chk_row.addWidget(self._wheel_inv_gas_chk)
+
+        self._wheel_inv_brake_chk = QCheckBox("Invertir freno")
+        self._wheel_inv_brake_chk.toggled.connect(self._on_wheel_inv_brake_changed)
+        chk_row.addWidget(self._wheel_inv_brake_chk)
+
+        self._wheel_combo_chk = QCheckBox("Pedales combinados (1 eje)")
+        self._wheel_combo_chk.setToolTip(
+            "Divide un único eje combinado de pedales en Freno (LT) y Acelerador (RT)"
+        )
+        self._wheel_combo_chk.toggled.connect(self._on_wheel_combo_changed)
+        chk_row.addWidget(self._wheel_combo_chk)
+        chk_row.addStretch(1)
+        wlay.addLayout(chk_row)
+        return card
 
     def _create_simple_stick_card(
         self, title: str, tag: str
@@ -1695,10 +1833,56 @@ class MainWindow(QMainWindow):
             )
             for v, btn in self._curve_btns.items():
                 btn.setChecked(v == closest_curve)
+
+            self._sync_wheel_widgets(cfg)
         finally:
             self._syncing_widgets = False
 
         self._sync_previews()
+
+    def _sync_wheel_widgets(self, cfg: AntiDriftConfig) -> None:
+        for mode_id, btn in self._wheel_mode_btns.items():
+            btn.setChecked(mode_id == cfg.wheel_mode)
+        closest_rot = min(
+            self._wheel_rot_btns.keys(),
+            key=lambda d: abs(d - cfg.wheel_rotation_deg),
+        )
+        for deg, btn in self._wheel_rot_btns.items():
+            btn.setChecked(deg == closest_rot)
+
+        sdz = max(0, min(20, round(cfg.wheel_steer_dz * 100)))
+        self._wheel_steer_dz_slider.setValue(sdz)
+        self._wheel_steer_dz_lbl.setText(f"{sdz}%")
+
+        ssat = max(35, min(100, round(cfg.wheel_steer_sat * 100)))
+        self._wheel_steer_sat_slider.setValue(ssat)
+        self._wheel_steer_sat_lbl.setText(f"{ssat}%")
+
+        lin_val = max(50, min(150, round(cfg.wheel_linearity * 100)))
+        self._wheel_lin_slider.setValue(lin_val)
+        self._wheel_lin_lbl.setText(f"{lin_val / 100.0:.2f}")
+
+        dz_g = max(0, min(25, round(cfg.wheel_dz_gas * 100)))
+        self._wheel_dz_gas_slider.setValue(dz_g)
+        self._wheel_dz_gas_lbl.setText(f"{dz_g}%")
+
+        mg = max(50, min(100, round(cfg.wheel_max_gas * 100)))
+        self._wheel_max_gas_slider.setValue(mg)
+        self._wheel_max_gas_lbl.setText(f"{mg}%")
+
+        dz_b = max(0, min(25, round(cfg.wheel_dz_brake * 100)))
+        self._wheel_dz_brake_slider.setValue(dz_b)
+        self._wheel_dz_brake_lbl.setText(f"{dz_b}%")
+
+        mb = max(50, min(100, round(cfg.wheel_max_brake * 100)))
+        self._wheel_max_brake_slider.setValue(mb)
+        self._wheel_max_brake_lbl.setText(f"{mb}%")
+
+        self._wheel_inv_gas_chk.setChecked(cfg.wheel_invert_gas)
+        self._wheel_inv_brake_chk.setChecked(cfg.wheel_invert_brake)
+        self._wheel_combo_chk.setChecked(cfg.wheel_combined_pedals)
+        if cfg.wheel_mode == "wheel" and not self._wheel_toggle.isChecked():
+            self._wheel_toggle.setChecked(True)
 
     def _sync_previews(self) -> None:
         self._ls_controls.plot.set_params(
@@ -1794,6 +1978,104 @@ class MainWindow(QMainWindow):
             btn.blockSignals(True)
             btn.setChecked(v == curve_val)
             btn.blockSignals(False)
+        self._sync_previews()
+
+    def _on_toggle_wheel_card(self, checked: bool) -> None:
+        self._wheel_card.setVisible(checked)
+        self._wheel_toggle.setText(
+            ("▾ " if checked else "▸ ")
+            + "Volante y Pedales (Thrustmaster T80 / Sim Racing)"
+        )
+
+    def _on_wheel_mode_selected(self, mode_id: str) -> None:
+        if self._syncing_widgets:
+            return
+        self._config.wheel_mode = mode_id
+        for m, btn in self._wheel_mode_btns.items():
+            btn.blockSignals(True)
+            btn.setChecked(m == mode_id)
+            btn.blockSignals(False)
+        if mode_id == "wheel":
+            self._set_preview_family("wheel")
+        elif mode_id == "auto" and self._family_override == "wheel":
+            self._set_preview_family(None)
+        self._sync_previews()
+
+    def _on_wheel_rot_selected(self, deg: int) -> None:
+        if self._syncing_widgets:
+            return
+        self._config.wheel_rotation_deg = deg
+        for d, btn in self._wheel_rot_btns.items():
+            btn.blockSignals(True)
+            btn.setChecked(d == deg)
+            btn.blockSignals(False)
+        self._sync_previews()
+
+    def _on_wheel_steer_dz_changed(self, pct: int) -> None:
+        if self._syncing_widgets:
+            return
+        self._config.wheel_steer_dz = round(pct / 100.0, 3)
+        self._wheel_steer_dz_lbl.setText(f"{pct}%")
+        self._sync_previews()
+
+    def _on_wheel_steer_sat_changed(self, pct: int) -> None:
+        if self._syncing_widgets:
+            return
+        self._config.wheel_steer_sat = round(pct / 100.0, 2)
+        self._wheel_steer_sat_lbl.setText(f"{pct}%")
+        self._sync_previews()
+
+    def _on_wheel_lin_changed(self, val: int) -> None:
+        if self._syncing_widgets:
+            return
+        self._config.wheel_linearity = round(val / 100.0, 2)
+        self._wheel_lin_lbl.setText(f"{val / 100.0:.2f}")
+        self._sync_previews()
+
+    def _on_wheel_dz_gas_changed(self, pct: int) -> None:
+        if self._syncing_widgets:
+            return
+        self._config.wheel_dz_gas = round(pct / 100.0, 3)
+        self._wheel_dz_gas_lbl.setText(f"{pct}%")
+        self._sync_previews()
+
+    def _on_wheel_max_gas_changed(self, pct: int) -> None:
+        if self._syncing_widgets:
+            return
+        self._config.wheel_max_gas = round(pct / 100.0, 2)
+        self._wheel_max_gas_lbl.setText(f"{pct}%")
+        self._sync_previews()
+
+    def _on_wheel_dz_brake_changed(self, pct: int) -> None:
+        if self._syncing_widgets:
+            return
+        self._config.wheel_dz_brake = round(pct / 100.0, 3)
+        self._wheel_dz_brake_lbl.setText(f"{pct}%")
+        self._sync_previews()
+
+    def _on_wheel_max_brake_changed(self, pct: int) -> None:
+        if self._syncing_widgets:
+            return
+        self._config.wheel_max_brake = round(pct / 100.0, 2)
+        self._wheel_max_brake_lbl.setText(f"{pct}%")
+        self._sync_previews()
+
+    def _on_wheel_inv_gas_changed(self, checked: bool) -> None:
+        if self._syncing_widgets:
+            return
+        self._config.wheel_invert_gas = bool(checked)
+        self._sync_previews()
+
+    def _on_wheel_inv_brake_changed(self, checked: bool) -> None:
+        if self._syncing_widgets:
+            return
+        self._config.wheel_invert_brake = bool(checked)
+        self._sync_previews()
+
+    def _on_wheel_combo_changed(self, checked: bool) -> None:
+        if self._syncing_widgets:
+            return
+        self._config.wheel_combined_pedals = bool(checked)
         self._sync_previews()
 
     def _on_center_spin_changed(self, tag: str, axis: str, val: int) -> None:
@@ -1956,6 +2238,8 @@ class MainWindow(QMainWindow):
     def _set_preview_family(self, family: str | None) -> None:
         self._family_override = family
         self._controller_widget.set_family_override(family)
+        if family == "wheel" and not self._wheel_toggle.isChecked():
+            self._wheel_toggle.setChecked(True)
         self._refresh_family_badge()
 
     def _refresh_family_badge(self) -> None:
@@ -1964,6 +2248,7 @@ class MainWindow(QMainWindow):
             "playstation": "PS",
             "nintendo_pro": "Switch Pro",
             "joycon": "Joy-Con",
+            "wheel": "Volante",
         }
         active = self._controller_widget.active_family()
         prefix = "Auto: " if self._family_override is None else ""
@@ -2025,6 +2310,9 @@ class MainWindow(QMainWindow):
         if not self._sim_btn.isChecked():
             self._controller_widget.set_controller_state(state)
             self._update_simple_readout(state)
+        if (state.is_wheel or state.controller_family == "wheel") and state.physical_stable_id != prev_stable:
+            if not self._wheel_toggle.isChecked():
+                self._wheel_toggle.setChecked(True)
         self._refresh_family_badge()
         if self._circ_dialog is not None:
             self._circ_dialog.feed_state(state)
@@ -2128,16 +2416,23 @@ class MainWindow(QMainWindow):
             pressed.append("Cruceta ◀")
         elif state.hat_x > 0:
             pressed.append("Cruceta ▶")
+        is_wheel_view = state.is_wheel or self._controller_widget.active_family() == "wheel"
+        if is_wheel_view and connected:
+            deg = (float(state.out_lx) / float(AXIS_MAX)) * (float(self._config.wheel_rotation_deg) * 0.5)
+            if abs(deg) >= 1.0:
+                pressed.insert(0, f"Giro {'+' if deg > 0 else ''}{deg:.0f}°")
         if lt_pct >= 5:
-            pressed.append(f"LT {lt_pct}%")
+            pressed.append(("Freno " if is_wheel_view else "LT ") + f"{lt_pct}%")
         if rt_pct >= 5:
-            pressed.append(f"RT {rt_pct}%")
+            pressed.append(("Gas " if is_wheel_view else "RT ") + f"{rt_pct}%")
 
         if pressed:
             self._active_buttons_label.setText("Pulsando: " + "  ·  ".join(pressed))
         elif connected:
             self._active_buttons_label.setText(
-                "Listo · Pulsa botones o mueve las palancas para probar."
+                "Listo · Gira el volante o pisa los pedales para probar."
+                if is_wheel_view
+                else "Listo · Pulsa botones o mueve las palancas para probar."
             )
         else:
             self._active_buttons_label.setText(

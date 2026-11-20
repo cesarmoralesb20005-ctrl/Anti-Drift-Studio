@@ -25,6 +25,28 @@
 #define MAX_PATH_LEN 256
 #define DEFAULT_VIRTUAL_NAME "Microsoft X-Box 360 pad"
 
+#ifndef ABS_THROTTLE
+#define ABS_THROTTLE 0x06
+#endif
+#ifndef ABS_RUDDER
+#define ABS_RUDDER 0x07
+#endif
+#ifndef ABS_WHEEL
+#define ABS_WHEEL 0x08
+#endif
+#ifndef ABS_GAS
+#define ABS_GAS 0x09
+#endif
+#ifndef ABS_BRAKE
+#define ABS_BRAKE 0x0a
+#endif
+#ifndef BTN_GEAR_DOWN
+#define BTN_GEAR_DOWN 0x150
+#endif
+#ifndef BTN_GEAR_UP
+#define BTN_GEAR_UP 0x151
+#endif
+
 static volatile sig_atomic_t running = 1;
 static volatile sig_atomic_t reload_cfg = 0;
 
@@ -110,6 +132,18 @@ typedef struct {
     int rumble_gain;    /* 0..100 */
     int swap_nintendo;  /* 0 or 1 */
     int multi_controller; /* 1=protect all connected controllers, 0=only device_path */
+    int wheel_mode;         /* 0=auto, 1=wheel, 2=gamepad */
+    int wheel_rotation_deg; /* 180..1080 */
+    double wheel_steer_dz;  /* 0.0..0.30 */
+    double wheel_steer_sat; /* 0.25..1.00 */
+    double wheel_linearity; /* 0.45..1.60 */
+    double wheel_dz_gas;    /* 0.0..0.35 */
+    double wheel_dz_brake;  /* 0.0..0.35 */
+    double wheel_max_gas;   /* 0.50..1.00 */
+    double wheel_max_brake; /* 0.50..1.00 */
+    int wheel_invert_gas;
+    int wheel_invert_brake;
+    int wheel_combined_pedals;
     char device_path[MAX_PATH_LEN];
     char virtual_name[UINPUT_MAX_NAME_SIZE];
 } Config;
@@ -121,6 +155,15 @@ static void init_default_config(Config *cfg) {
     cfg->response_curve = 1.0;
     cfg->rumble_gain = 100;
     cfg->multi_controller = 1;
+    cfg->wheel_mode = 0;
+    cfg->wheel_rotation_deg = 270;
+    cfg->wheel_steer_dz = 0.02;
+    cfg->wheel_steer_sat = 1.00;
+    cfg->wheel_linearity = 1.00;
+    cfg->wheel_dz_gas = 0.03;
+    cfg->wheel_dz_brake = 0.04;
+    cfg->wheel_max_gas = 1.00;
+    cfg->wheel_max_brake = 1.00;
     snprintf(cfg->device_path, sizeof(cfg->device_path), "auto");
     snprintf(cfg->virtual_name, sizeof(cfg->virtual_name), "%s", DEFAULT_VIRTUAL_NAME);
 }
@@ -161,6 +204,28 @@ static void apply_kv_to_config(Config *cfg, const char *key, const char *raw_val
     }
     else if (strcmp(key, "swap_nintendo") == 0) cfg->swap_nintendo = ((int)val != 0);
     else if (strcmp(key, "multi_controller") == 0) cfg->multi_controller = ((int)val != 0);
+    else if (strcmp(key, "wheel_mode") == 0) {
+        if (strcmp(strval, "wheel") == 0) cfg->wheel_mode = 1;
+        else if (strcmp(strval, "gamepad") == 0) cfg->wheel_mode = 2;
+        else if (strcmp(strval, "auto") == 0) cfg->wheel_mode = 0;
+        else cfg->wheel_mode = (int)val;
+        if (cfg->wheel_mode < 0 || cfg->wheel_mode > 2) cfg->wheel_mode = 0;
+    }
+    else if (strcmp(key, "wheel_rotation_deg") == 0) {
+        cfg->wheel_rotation_deg = (int)val;
+        if (cfg->wheel_rotation_deg < 180) cfg->wheel_rotation_deg = 180;
+        if (cfg->wheel_rotation_deg > 1080) cfg->wheel_rotation_deg = 1080;
+    }
+    else if (strcmp(key, "wheel_steer_dz") == 0) cfg->wheel_steer_dz = fmax(0.0, fmin(0.30, val));
+    else if (strcmp(key, "wheel_steer_sat") == 0) cfg->wheel_steer_sat = fmax(0.25, fmin(1.00, val));
+    else if (strcmp(key, "wheel_linearity") == 0) cfg->wheel_linearity = fmax(0.45, fmin(1.60, val));
+    else if (strcmp(key, "wheel_dz_gas") == 0) cfg->wheel_dz_gas = fmax(0.0, fmin(0.35, val));
+    else if (strcmp(key, "wheel_dz_brake") == 0) cfg->wheel_dz_brake = fmax(0.0, fmin(0.35, val));
+    else if (strcmp(key, "wheel_max_gas") == 0) cfg->wheel_max_gas = fmax(0.50, fmin(1.00, val));
+    else if (strcmp(key, "wheel_max_brake") == 0) cfg->wheel_max_brake = fmax(0.50, fmin(1.00, val));
+    else if (strcmp(key, "wheel_invert_gas") == 0) cfg->wheel_invert_gas = ((int)val != 0);
+    else if (strcmp(key, "wheel_invert_brake") == 0) cfg->wheel_invert_brake = ((int)val != 0);
+    else if (strcmp(key, "wheel_combined_pedals") == 0) cfg->wheel_combined_pedals = ((int)val != 0);
     else if (strcmp(key, "device_path") == 0) {
         if (strval[0]) snprintf(cfg->device_path, sizeof(cfg->device_path), "%s", strval);
         else snprintf(cfg->device_path, sizeof(cfg->device_path), "auto");
@@ -532,6 +597,65 @@ static int apply_hair_trigger(int val, int hair_trigger) {
     return (val >= 100) ? 1023 : 0;
 }
 
+static int compute_wheel_steering(
+    int raw_x, int center_x, double dz, double saturation, double linearity) {
+    double nx = normalize_axis(raw_x, center_x);
+    double mag = fabs(nx);
+    double reach = fmax(dz + 0.05, fmin(1.0, saturation));
+    if (mag <= dz || dz >= 0.999) return 0;
+    double scaled = (mag - dz) / (reach - dz);
+    if (scaled > 1.0) scaled = 1.0;
+    if (linearity != 1.0 && scaled > 0.0) {
+        scaled = pow(scaled, linearity);
+        if (scaled > 1.0) scaled = 1.0;
+    }
+    return scalar_to_i16((nx < 0.0) ? -scaled : scaled);
+}
+
+static int compute_wheel_pedal(
+    int raw_val, double dz, double max_reach, int invert, int hair_trigger) {
+    int clamped_raw = raw_val;
+    if (clamped_raw < 0) clamped_raw = 0;
+    if (clamped_raw > 1023) clamped_raw = 1023;
+    int v = invert ? (1023 - clamped_raw) : clamped_raw;
+    double frac = (double)v / 1023.0;
+    double reach = fmax(dz + 0.05, fmin(1.0, max_reach));
+    int out = 0;
+    if (frac > dz) {
+        double scaled = (frac - dz) / (reach - dz);
+        if (scaled > 1.0) scaled = 1.0;
+        out = (int)llround(scaled * 1023.0);
+    }
+    return apply_hair_trigger(out, hair_trigger);
+}
+
+static void split_combined_pedals(int raw_i16, int swap_polarity, int *out_brake, int *out_gas) {
+    int val = swap_polarity ? -raw_i16 : raw_i16;
+    if (val < 0) {
+        double f = fmin(1.0, (double)(-val) / 32768.0);
+        *out_brake = 0;
+        *out_gas = (int)llround(f * 1023.0);
+    } else {
+        double f = fmin(1.0, (double)val / 32767.0);
+        *out_brake = (int)llround(f * 1023.0);
+        *out_gas = 0;
+    }
+}
+
+static int is_wheel_device_name(const char *dev_name) {
+    if (!dev_name || !dev_name[0]) return 0;
+    static const char *const wheel_tokens[] = {
+        "thrustmaster", "t80", "t150", "t248", "t300", "t500", "tmx",
+        "ferrari", "g29", "g920", "g923", "g27", "g25",
+        "driving force", "fanatec", "moza", "simagic",
+        "hori", "steering", "wheel", "volante", "racing"
+    };
+    for (size_t i = 0; i < sizeof(wheel_tokens) / sizeof(wheel_tokens[0]); i++) {
+        if (strcasestr(dev_name, wheel_tokens[i]) != NULL) return 1;
+    }
+    return 0;
+}
+
 static void apply_low_latency_os(int enable) {
     if (enable) {
         mlockall(MCL_CURRENT | MCL_FUTURE);
@@ -614,6 +738,12 @@ static int score_gamepad_node(const char *ev_name, const char *dev_node) {
         ioctl(fd, EVIOCGBIT(EV_ABS, sizeof(abs_bits)), abs_bits) >= 0) {
         int has_xy = bit_is_set(abs_bits, ABS_X) && bit_is_set(abs_bits, ABS_Y);
         int has_rxry = bit_is_set(abs_bits, ABS_RX) && bit_is_set(abs_bits, ABS_RY);
+        int has_steer = bit_is_set(abs_bits, ABS_X) || bit_is_set(abs_bits, ABS_WHEEL);
+        int has_wheel_pedals = bit_is_set(abs_bits, ABS_GAS) ||
+                               bit_is_set(abs_bits, ABS_BRAKE) ||
+                               bit_is_set(abs_bits, ABS_RZ) ||
+                               bit_is_set(abs_bits, ABS_Z) ||
+                               bit_is_set(abs_bits, ABS_THROTTLE);
         int has_mouse_left = bit_is_set(key_bits, BTN_LEFT);
         int has_south = bit_is_set(key_bits, BTN_SOUTH);
         int has_trigger_joy = bit_is_set(key_bits, BTN_TRIGGER);
@@ -621,19 +751,29 @@ static int score_gamepad_node(const char *ev_name, const char *dev_node) {
         int has_joycon_btns = bit_is_set(key_bits, BTN_EAST) ||
                               bit_is_set(key_bits, BTN_THUMBL) ||
                               bit_is_set(key_bits, BTN_THUMBR);
+        int has_wheel_btns = bit_is_set(key_bits, BTN_GEAR_DOWN) ||
+                             bit_is_set(key_bits, BTN_GEAR_UP);
+        int wheel_hint = is_wheel_device_name(dev_name) ||
+                         bit_is_set(abs_bits, ABS_WHEEL) ||
+                         bit_is_set(abs_bits, ABS_GAS) ||
+                         bit_is_set(abs_bits, ABS_BRAKE) ||
+                         has_wheel_btns;
 
-        if ((has_xy || has_rxry) && !has_mouse_left &&
-            (has_south || has_trigger_joy || has_dpad_btns || has_joycon_btns)) {
+        if (((has_xy || has_rxry) || (has_steer && (has_wheel_pedals || wheel_hint))) &&
+            !has_mouse_left &&
+            (has_south || has_trigger_joy || has_dpad_btns || has_joycon_btns ||
+             has_wheel_btns || has_wheel_pedals)) {
             score = 10;
             if (has_south) score += 50;
             if (has_xy && has_rxry) score += 25;
+            if (wheel_hint) score += 45;
             if (bit_is_set(abs_bits, ABS_HAT0X) || has_dpad_btns) score += 15;
             if (strstr(dev_name, "Xbox") || strstr(dev_name, "X-Box") ||
                 strstr(dev_name, "DualSense") || strstr(dev_name, "Wireless Controller") ||
                 strstr(dev_name, "Switch") || strstr(dev_name, "Pro Controller") ||
                 strstr(dev_name, "Joy-Con") || strstr(dev_name, "Nintendo") ||
                 strstr(dev_name, "8BitDo") || strstr(dev_name, "GameSir") ||
-                strstr(dev_name, "Gamepad")) {
+                strstr(dev_name, "Gamepad") || wheel_hint) {
                 score += 20;
             }
         }
@@ -687,8 +827,11 @@ typedef struct {
     int rx_code, ry_code;
     int lt_code, rt_code;
     int dig_lt_code, dig_rt_code;
+    int is_wheel;
+    int combo_pedal_code;
     int use_generic_joy_btns;
     int use_dpad_btns;
+    int wheel_use_gear_shifters;
     int has_ff_rumble;
 
     int lx_min, lx_max;
@@ -697,6 +840,7 @@ typedef struct {
     int ry_min, ry_max;
     int lt_min, lt_max;
     int rt_min, rt_max;
+    int combo_min, combo_max;
 } HardwareMap;
 
 static void query_abs_bounds(int fd, int code, int def_min, int def_max, int *out_min, int *out_max) {
@@ -721,33 +865,77 @@ static HardwareMap probe_hardware_map(int src_fd, int src_is_rw) {
     hm.rt_code = -1;
     hm.dig_lt_code = -1;
     hm.dig_rt_code = -1;
+    hm.combo_pedal_code = -1;
 
     unsigned char key_bits[96] = {0};
     unsigned char abs_bits[8] = {0};
     unsigned char ff_bits[16] = {0};
+    char dev_name[160] = {0};
     ioctl(src_fd, EVIOCGBIT(EV_KEY, sizeof(key_bits)), key_bits);
     ioctl(src_fd, EVIOCGBIT(EV_ABS, sizeof(abs_bits)), abs_bits);
+    ioctl(src_fd, EVIOCGNAME(sizeof(dev_name)), dev_name);
     if (src_is_rw && ioctl(src_fd, EVIOCGBIT(EV_FF, sizeof(ff_bits)), ff_bits) >= 0) {
         hm.has_ff_rumble = bit_is_set(ff_bits, FF_RUMBLE);
     }
 
-    if (!bit_is_set(abs_bits, ABS_X) || !bit_is_set(abs_bits, ABS_Y)) {
-        hm.lx_code = -1;
+    int has_x = bit_is_set(abs_bits, ABS_X);
+    int has_y = bit_is_set(abs_bits, ABS_Y);
+    int has_wheel_axis = bit_is_set(abs_bits, ABS_WHEEL);
+    int has_gas = bit_is_set(abs_bits, ABS_GAS);
+    int has_brake = bit_is_set(abs_bits, ABS_BRAKE);
+    int has_throttle = bit_is_set(abs_bits, ABS_THROTTLE);
+    int has_z = bit_is_set(abs_bits, ABS_Z);
+    int has_rz = bit_is_set(abs_bits, ABS_RZ);
+    int has_rxry = bit_is_set(abs_bits, ABS_RX) && bit_is_set(abs_bits, ABS_RY);
+    int has_gear_btns = bit_is_set(key_bits, BTN_GEAR_DOWN) || bit_is_set(key_bits, BTN_GEAR_UP);
+    hm.wheel_use_gear_shifters = has_gear_btns;
+
+    int no_y_pedals = has_x && !has_y && (has_z || has_rz || has_throttle);
+    if (is_wheel_device_name(dev_name) || has_wheel_axis || has_gas || has_brake ||
+        has_gear_btns || no_y_pedals) {
+        hm.is_wheel = 1;
+    }
+
+    if (hm.is_wheel) {
+        hm.lx_code = has_wheel_axis ? ABS_WHEEL : (has_x ? ABS_X : -1);
         hm.ly_code = -1;
-    }
 
-    if (bit_is_set(abs_bits, ABS_RX) && bit_is_set(abs_bits, ABS_RY)) {
-        hm.rx_code = ABS_RX;
-        hm.ry_code = ABS_RY;
-        if (bit_is_set(abs_bits, ABS_Z)) hm.lt_code = ABS_Z;
-        if (bit_is_set(abs_bits, ABS_RZ)) hm.rt_code = ABS_RZ;
-    } else if (bit_is_set(abs_bits, ABS_Z) && bit_is_set(abs_bits, ABS_RZ)) {
-        hm.rx_code = ABS_Z;
-        hm.ry_code = ABS_RZ;
-    }
+        if (has_gas) hm.rt_code = ABS_GAS;
+        else if (has_throttle) hm.rt_code = ABS_THROTTLE;
+        else if (has_rz) hm.rt_code = ABS_RZ;
+        else if (has_z && !has_brake) hm.rt_code = ABS_Z;
 
-    if (hm.lt_code < 0 && bit_is_set(abs_bits, ABS_BRAKE)) hm.lt_code = ABS_BRAKE;
-    if (hm.rt_code < 0 && bit_is_set(abs_bits, ABS_GAS)) hm.rt_code = ABS_GAS;
+        if (has_brake) hm.lt_code = ABS_BRAKE;
+        else if (has_z && hm.rt_code != ABS_Z) hm.lt_code = ABS_Z;
+        else if (has_rz && hm.rt_code != ABS_RZ) hm.lt_code = ABS_RZ;
+        else if (has_y && hm.rt_code >= 0 && hm.rt_code != ABS_Y && !has_rxry) hm.lt_code = ABS_Y;
+
+        if (has_y && !has_gas && !has_brake && !has_throttle && !has_z && !has_rz) {
+            hm.combo_pedal_code = ABS_Y;
+        } else if (hm.rt_code >= 0 && hm.lt_code < 0) {
+            hm.combo_pedal_code = hm.rt_code;
+        } else if (hm.lt_code >= 0 && hm.rt_code < 0) {
+            hm.combo_pedal_code = hm.lt_code;
+        }
+    } else {
+        if (!has_x || !has_y) {
+            hm.lx_code = -1;
+            hm.ly_code = -1;
+        }
+
+        if (has_rxry) {
+            hm.rx_code = ABS_RX;
+            hm.ry_code = ABS_RY;
+            if (has_z) hm.lt_code = ABS_Z;
+            if (has_rz) hm.rt_code = ABS_RZ;
+        } else if (has_z && has_rz) {
+            hm.rx_code = ABS_Z;
+            hm.ry_code = ABS_RZ;
+        }
+
+        if (hm.lt_code < 0 && has_brake) hm.lt_code = ABS_BRAKE;
+        if (hm.rt_code < 0 && has_gas) hm.rt_code = ABS_GAS;
+    }
 
     if (hm.lt_code < 0 && bit_is_set(key_bits, BTN_TL2)) hm.dig_lt_code = BTN_TL2;
     if (hm.rt_code < 0 && bit_is_set(key_bits, BTN_TR2)) hm.dig_rt_code = BTN_TR2;
@@ -765,6 +953,7 @@ static HardwareMap probe_hardware_map(int src_fd, int src_is_rw) {
     query_abs_bounds(src_fd, hm.ry_code, -32768, 32767, &hm.ry_min, &hm.ry_max);
     query_abs_bounds(src_fd, hm.lt_code, 0, 1023, &hm.lt_min, &hm.lt_max);
     query_abs_bounds(src_fd, hm.rt_code, 0, 1023, &hm.rt_min, &hm.rt_max);
+    query_abs_bounds(src_fd, hm.combo_pedal_code, -32768, 32767, &hm.combo_min, &hm.combo_max);
 
     return hm;
 }
@@ -781,6 +970,7 @@ static int translate_generic_button(int code) {
         case 297: return 315;
         case 298: return 317;
         case 299: return 318;
+        case 300: return 316;
         default: return -1;
     }
 }
@@ -862,6 +1052,7 @@ typedef struct {
     int phys_btn[NUM_STD_KEYS];
     int64_t btn_last_ms[NUM_STD_KEYS];
     int phys_lt, phys_rt;
+    int raw_combo_pedal;
     int phys_hx, phys_hy;
     int dpad_u, dpad_d, dpad_l, dpad_r;
     int raw_lx, raw_ly, raw_rx, raw_ry;
@@ -958,13 +1149,55 @@ static void handle_uinput_ff(PadInstance *pad) {
     }
 }
 
+static int pad_is_wheel_active(const PadInstance *pad) {
+    if (pad->cfg.wheel_mode == 1) return 1;
+    if (pad->cfg.wheel_mode == 2) return 0;
+    return pad->hm.is_wheel;
+}
+
+static int wheel_combined_active(const PadInstance *pad) {
+    if (!pad_is_wheel_active(pad)) return 0;
+    if (pad->cfg.wheel_combined_pedals) return 1;
+    return (pad->hm.combo_pedal_code >= 0 && pad->hm.lt_code < 0 && pad->hm.rt_code < 0);
+}
+
+static void emit_pedals(PadInstance *pad) {
+    const Config *cfg = &pad->cfg;
+    const PadRuntime *rt = &pad->rt;
+    if (pad_is_wheel_active(pad)) {
+        int raw_lt = rt->phys_lt;
+        int raw_rt = rt->phys_rt;
+        if (wheel_combined_active(pad)) {
+            split_combined_pedals(rt->raw_combo_pedal, 0, &raw_lt, &raw_rt);
+        }
+        int out_lt = compute_wheel_pedal(
+            raw_lt, cfg->wheel_dz_brake, cfg->wheel_max_brake,
+            cfg->wheel_invert_brake, cfg->hair_trigger);
+        int out_rt = compute_wheel_pedal(
+            raw_rt, cfg->wheel_dz_gas, cfg->wheel_max_gas,
+            cfg->wheel_invert_gas, cfg->hair_trigger);
+        emit_ev(pad, EV_ABS, ABS_Z, out_lt);
+        emit_ev(pad, EV_ABS, ABS_RZ, out_rt);
+    } else {
+        emit_ev(pad, EV_ABS, ABS_Z, apply_hair_trigger(rt->phys_lt, cfg->hair_trigger));
+        emit_ev(pad, EV_ABS, ABS_RZ, apply_hair_trigger(rt->phys_rt, cfg->hair_trigger));
+    }
+}
+
 static void emit_corrected_sticks(PadInstance *pad, int which) {
     const Config *cfg = &pad->cfg;
     const PadRuntime *rt = &pad->rt;
+    int is_wheel = pad_is_wheel_active(pad);
     if (which == 0 || which == 2) {
         if (rt->override_l) {
             emit_ev(pad, EV_ABS, ABS_X, rt->override_lx);
             emit_ev(pad, EV_ABS, ABS_Y, rt->override_ly);
+        } else if (is_wheel) {
+            int ox = compute_wheel_steering(
+                rt->raw_lx, cfg->center_lx, cfg->wheel_steer_dz,
+                cfg->wheel_steer_sat, cfg->wheel_linearity);
+            emit_ev(pad, EV_ABS, ABS_X, ox);
+            emit_ev(pad, EV_ABS, ABS_Y, 0);
         } else {
             int ox, oy;
             apply_stick_transform(
@@ -980,6 +1213,9 @@ static void emit_corrected_sticks(PadInstance *pad, int which) {
         if (rt->override_r) {
             emit_ev(pad, EV_ABS, ABS_RX, rt->override_rx);
             emit_ev(pad, EV_ABS, ABS_RY, rt->override_ry);
+        } else if (is_wheel) {
+            emit_ev(pad, EV_ABS, ABS_RX, 0);
+            emit_ev(pad, EV_ABS, ABS_RY, 0);
         } else {
             int ox, oy;
             apply_stick_transform(
@@ -1159,10 +1395,14 @@ static void sync_initial_pad_state(PadInstance *pad) {
     if (hm->rt_code >= 0 && ioctl(pad->src_fd, EVIOCGABS(hm->rt_code), &info) == 0) {
         rt->phys_rt = scale_trig_to_1023(info.value, hm->rt_min, hm->rt_max);
     }
+    if (hm->combo_pedal_code >= 0 && ioctl(pad->src_fd, EVIOCGABS(hm->combo_pedal_code), &info) == 0) {
+        rt->raw_combo_pedal = scale_hw_to_i16(info.value, hm->combo_min, hm->combo_max);
+    }
     if (ioctl(pad->src_fd, EVIOCGABS(ABS_HAT0X), &info) == 0) rt->phys_hx = info.value;
     if (ioctl(pad->src_fd, EVIOCGABS(ABS_HAT0Y), &info) == 0) rt->phys_hy = info.value;
 
     emit_corrected_sticks(pad, 2);
+    emit_pedals(pad);
     emit_ev(pad, EV_SYN, SYN_REPORT, 0);
 }
 
@@ -1332,8 +1572,7 @@ static void reload_all_pads(PadInstance *pads, Config *global_cfg) {
         }
 
         emit_corrected_sticks(pad, 2);
-        emit_ev(pad, EV_ABS, ABS_Z, apply_hair_trigger(pad->rt.phys_lt, pad->cfg.hair_trigger));
-        emit_ev(pad, EV_ABS, ABS_RZ, apply_hair_trigger(pad->rt.phys_rt, pad->cfg.hair_trigger));
+        emit_pedals(pad);
         emit_ev(pad, EV_SYN, SYN_REPORT, 0);
     }
 
@@ -1367,6 +1606,12 @@ static int process_pad_events(PadInstance *pad) {
         for (int ei = 0; ei < count; ei++) {
             struct input_event ev = ev_buf[ei];
             if (ev.type == EV_ABS) {
+                if (hm->combo_pedal_code >= 0 && ev.code == hm->combo_pedal_code) {
+                    rt->raw_combo_pedal = scale_hw_to_i16(ev.value, hm->combo_min, hm->combo_max);
+                    if (wheel_combined_active(pad)) {
+                        emit_pedals(pad);
+                    }
+                }
                 if (ev.code == hm->lx_code) {
                     rt->raw_lx = scale_hw_to_i16(ev.value, hm->lx_min, hm->lx_max);
                     pad->dirty_l = 1;
@@ -1381,10 +1626,10 @@ static int process_pad_events(PadInstance *pad) {
                     pad->dirty_r = 1;
                 } else if (ev.code == hm->lt_code) {
                     rt->phys_lt = scale_trig_to_1023(ev.value, hm->lt_min, hm->lt_max);
-                    emit_ev(pad, EV_ABS, ABS_Z, apply_hair_trigger(rt->phys_lt, cfg->hair_trigger));
+                    if (!wheel_combined_active(pad)) emit_pedals(pad);
                 } else if (ev.code == hm->rt_code) {
                     rt->phys_rt = scale_trig_to_1023(ev.value, hm->rt_min, hm->rt_max);
-                    emit_ev(pad, EV_ABS, ABS_RZ, apply_hair_trigger(rt->phys_rt, cfg->hair_trigger));
+                    if (!wheel_combined_active(pad)) emit_pedals(pad);
                 } else if (ev.code == ABS_HAT0X) {
                     rt->phys_hx = (ev.value < 0) ? -1 : ((ev.value > 0) ? 1 : 0);
                     emit_ev(pad, EV_ABS, ABS_HAT0X, rt->phys_hx);
@@ -1439,13 +1684,13 @@ static int process_pad_events(PadInstance *pad) {
 
                 if (ev.code == hm->dig_lt_code) {
                     rt->phys_lt = ev.value ? 1023 : 0;
-                    emit_ev(pad, EV_ABS, ABS_Z, rt->phys_lt);
+                    emit_pedals(pad);
                     emit_ev(pad, EV_SYN, SYN_REPORT, 0);
                     continue;
                 }
                 if (ev.code == hm->dig_rt_code) {
                     rt->phys_rt = ev.value ? 1023 : 0;
-                    emit_ev(pad, EV_ABS, ABS_RZ, rt->phys_rt);
+                    emit_pedals(pad);
                     emit_ev(pad, EV_SYN, SYN_REPORT, 0);
                     continue;
                 }
@@ -1466,9 +1711,14 @@ static int process_pad_events(PadInstance *pad) {
                     continue;
                 }
 
-                int target_code = hm->use_generic_joy_btns
-                    ? translate_generic_button(ev.code)
-                    : ev.code;
+                int target_code = ev.code;
+                if (ev.code == BTN_GEAR_DOWN) {
+                    target_code = 310;
+                } else if (ev.code == BTN_GEAR_UP) {
+                    target_code = 311;
+                } else if (hm->use_generic_joy_btns) {
+                    target_code = translate_generic_button(ev.code);
+                }
                 target_code = apply_nintendo_swap(target_code, cfg->swap_nintendo);
                 int idx = std_key_index(target_code);
                 if (idx >= 0) {

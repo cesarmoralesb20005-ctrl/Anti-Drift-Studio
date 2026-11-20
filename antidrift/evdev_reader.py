@@ -17,9 +17,13 @@ from PySide6.QtCore import QThread, Signal
 
 from .config import (
     AntiDriftConfig,
+    apply_hair_trigger,
     compute_corrected_stick,
+    compute_wheel_pedal,
+    compute_wheel_steering,
     scale_hw_to_i16,
     scale_trig_to_1023,
+    split_combined_pedals,
 )
 
 # Linux evdev constants (64-bit struct input_event)
@@ -36,6 +40,9 @@ ABS_Z = 0x02
 ABS_RX = 0x03
 ABS_RY = 0x04
 ABS_RZ = 0x05
+ABS_THROTTLE = 0x06
+ABS_RUDDER = 0x07
+ABS_WHEEL = 0x08
 ABS_GAS = 0x09
 ABS_BRAKE = 0x0A
 ABS_HAT0X = 0x10
@@ -46,6 +53,8 @@ BTN_TRIGGER = 288
 BTN_SOUTH = 304
 BTN_TL2 = 312
 BTN_TR2 = 313
+BTN_GEAR_DOWN = 336
+BTN_GEAR_UP = 337
 BTN_DPAD_UP = 544
 BTN_DPAD_DOWN = 545
 BTN_DPAD_LEFT = 546
@@ -53,9 +62,15 @@ BTN_DPAD_RIGHT = 547
 
 EVIOCGABS_BASE = 0x80184540
 KEY_BUF_LEN = 96
+EVIOCGNAME_256 = 0x80004506 | (256 << 16)
 EVIOCGKEY_96 = 0x80004518 | (KEY_BUF_LEN << 16)
 EVIOCGBIT_KEY_96 = 0x80004521 | (KEY_BUF_LEN << 16)
 EVIOCGBIT_ABS_8 = 0x80004523 | (8 << 16)
+
+WHEEL_SHIFTER_MAP: dict[int, str] = {
+    BTN_GEAR_DOWN: "LB",
+    BTN_GEAR_UP: "RB",
+}
 
 BUTTON_CODE_MAP: dict[int, str] = {
     304: "A",
@@ -82,6 +97,7 @@ GENERIC_JOY_BUTTON_MAP: dict[int, str] = {
     297: "MENU",
     298: "LS",
     299: "RS",
+    300: "GUIDE",
 }
 
 ALL_BUTTON_NAMES: tuple[str, ...] = tuple(BUTTON_CODE_MAP.values())
@@ -115,8 +131,11 @@ class HardwareAxisMap:
     rt_code: int = ABS_RZ
     dig_lt_code: int = -1
     dig_rt_code: int = -1
+    is_wheel: bool = False
+    combo_pedal_code: int = -1
     use_generic_joy_btns: bool = False
     use_dpad_btns: bool = False
+    wheel_use_gear_shifters: bool = False
 
     lx_bounds: tuple[int, int] = (-32768, 32767)
     ly_bounds: tuple[int, int] = (-32768, 32767)
@@ -124,6 +143,7 @@ class HardwareAxisMap:
     ry_bounds: tuple[int, int] = (-32768, 32767)
     lt_bounds: tuple[int, int] = (0, 1023)
     rt_bounds: tuple[int, int] = (0, 1023)
+    combo_bounds: tuple[int, int] = (-32768, 32767)
 
 
 @dataclass
@@ -139,13 +159,66 @@ class DetectedDevices:
     connected_count: int = 0
 
 
+_WHEEL_NAME_TOKENS = (
+    "thrustmaster",
+    "t80",
+    "t150",
+    "t248",
+    "t300",
+    "t500",
+    "tmx",
+    "ferrari",
+    "g29",
+    "g920",
+    "g923",
+    "g27",
+    "g25",
+    "driving force",
+    "fanatec",
+    "moza",
+    "simagic",
+    "hori",
+    "steering",
+    "wheel",
+    "volante",
+    "racing",
+)
+
+_LOGITECH_WHEEL_PIDS = {
+    "c24f",
+    "c262",
+    "c266",
+    "c26e",
+    "c294",
+    "c295",
+    "c298",
+    "c299",
+    "c29a",
+    "c29b",
+    "c29c",
+}
+
+
+def is_wheel_device_name(name: str | None) -> bool:
+    """Return True when the device name clearly indicates a racing wheel."""
+    low = (name or "").lower()
+    return any(tok in low for tok in _WHEEL_NAME_TOKENS)
+
+
 def detect_controller_family(
     name: str | None, vid_pid: str | None
 ) -> str:
-    """Detect controller visual family: 'xbox' | 'playstation' | 'nintendo_pro' | 'joycon'."""
+    """Detect visual family: 'xbox' | 'playstation' | 'nintendo_pro' | 'joycon' | 'wheel'."""
     low = (name or "").lower()
     vp = (vid_pid or "").lower()
-    vid = vp.split(":", 1)[0] if ":" in vp else ""
+    vid, pid = (vp.split(":", 1) + [""])[:2] if ":" in vp else ("", "")
+
+    if (
+        vid in ("044f", "0eb7", "346e")
+        or (vid == "046d" and pid in _LOGITECH_WHEEL_PIDS)
+        or is_wheel_device_name(low)
+    ):
+        return "wheel"
 
     if vp in ("057e:2006", "057e:2007", "057e:200e") or "joy-con" in low or "joycon" in low:
         return "joycon"
@@ -182,7 +255,8 @@ class ControllerState:
     """Real-time hardware and anti-drift virtual controller state."""
 
     mode: str = "disconnected"  # "virtual" | "direct" | "disconnected" | "simulated"
-    controller_family: str = "xbox"  # "xbox" | "playstation" | "nintendo_pro" | "joycon"
+    controller_family: str = "xbox"  # "xbox" | "playstation" | "nintendo_pro" | "joycon" | "wheel"
+    is_wheel: bool = False
     physical_path: str | None = None
     physical_name: str | None = None
     physical_vid_pid: str | None = None
@@ -196,6 +270,8 @@ class ControllerState:
     raw_ly: int = 0
     raw_rx: int = 0
     raw_ry: int = 0
+    raw_lt: int = 0
+    raw_rt: int = 0
 
     out_lx: int = 0
     out_ly: int = 0
@@ -306,6 +382,11 @@ def _score_gamepad(ev_sys: Path) -> ControllerDeviceInfo | None:
         fcntl.ioctl(fd, EVIOCGBIT_ABS_8, abs_bits)
         has_xy = _bit_set(abs_bits, ABS_X) and _bit_set(abs_bits, ABS_Y)
         has_rxry = _bit_set(abs_bits, ABS_RX) and _bit_set(abs_bits, ABS_RY)
+        has_steer = _bit_set(abs_bits, ABS_X) or _bit_set(abs_bits, ABS_WHEEL)
+        has_wheel_pedals = any(
+            _bit_set(abs_bits, code)
+            for code in (ABS_GAS, ABS_BRAKE, ABS_RZ, ABS_Z, ABS_THROTTLE)
+        )
         has_mouse = _bit_set(key_bits, BTN_LEFT)
         has_south = _bit_set(key_bits, BTN_SOUTH)
         has_joy = _bit_set(key_bits, BTN_TRIGGER)
@@ -315,9 +396,26 @@ def _score_gamepad(ev_sys: Path) -> ControllerDeviceInfo | None:
             or _bit_set(key_bits, 317)  # BTN_THUMBL (Joy-Con L)
             or _bit_set(key_bits, 318)  # BTN_THUMBR (Joy-Con R)
         )
-        if not (has_xy or has_rxry) or has_mouse or not (
-            has_south or has_joy or has_dpad_btns or has_joycon_btns
-        ):
+        has_wheel_btns = _bit_set(key_bits, BTN_GEAR_DOWN) or _bit_set(
+            key_bits, BTN_GEAR_UP
+        )
+        wheel_hint = (
+            is_wheel_device_name(name)
+            or _bit_set(abs_bits, ABS_WHEEL)
+            or _bit_set(abs_bits, ABS_GAS)
+            or _bit_set(abs_bits, ABS_BRAKE)
+            or has_wheel_btns
+        )
+        has_axes = (has_xy or has_rxry) or (has_steer and (has_wheel_pedals or wheel_hint))
+        has_btns = (
+            has_south
+            or has_joy
+            or has_dpad_btns
+            or has_joycon_btns
+            or has_wheel_btns
+            or has_wheel_pedals
+        )
+        if not has_axes or has_mouse or not has_btns:
             return None
 
         score = 10
@@ -325,9 +423,11 @@ def _score_gamepad(ev_sys: Path) -> ControllerDeviceInfo | None:
             score += 50
         if has_xy and has_rxry:
             score += 25
+        if wheel_hint:
+            score += 45
         if _bit_set(abs_bits, ABS_HAT0X) or has_dpad_btns:
             score += 15
-        if any(
+        if wheel_hint or any(
             kw in lowered
             for kw in (
                 "xbox",
@@ -451,8 +551,18 @@ def read_abs_value(fd: int, axis_code: int) -> int | None:
     return res[0] if res is not None else None
 
 
-def probe_hardware_map(fd: int) -> HardwareAxisMap:
-    """Inspect axis codes, bounds, and trigger/button quirks for any gamepad."""
+def _read_evdev_name(fd: int) -> str:
+    try:
+        buf = bytearray(256)
+        n = fcntl.ioctl(fd, EVIOCGNAME_256, buf)
+        raw = bytes(buf[:n] if n > 0 else buf).split(b"\x00", 1)[0]
+        return raw.decode("utf-8", errors="replace").strip()
+    except OSError:
+        return ""
+
+
+def probe_hardware_map(fd: int, device_name: str = "") -> HardwareAxisMap:
+    """Inspect axis codes, bounds, and trigger/button/wheel quirks for any device."""
     hm = HardwareAxisMap()
     key_bits = bytearray(KEY_BUF_LEN)
     abs_bits = bytearray(8)
@@ -462,24 +572,78 @@ def probe_hardware_map(fd: int) -> HardwareAxisMap:
     except OSError:
         return hm
 
-    if not (_bit_set(abs_bits, ABS_X) and _bit_set(abs_bits, ABS_Y)):
-        hm.lx_code, hm.ly_code = -1, -1
+    name = device_name or _read_evdev_name(fd)
+    has_x = _bit_set(abs_bits, ABS_X)
+    has_y = _bit_set(abs_bits, ABS_Y)
+    has_wheel_axis = _bit_set(abs_bits, ABS_WHEEL)
+    has_gas = _bit_set(abs_bits, ABS_GAS)
+    has_brake = _bit_set(abs_bits, ABS_BRAKE)
+    has_throttle = _bit_set(abs_bits, ABS_THROTTLE)
+    has_z = _bit_set(abs_bits, ABS_Z)
+    has_rz = _bit_set(abs_bits, ABS_RZ)
+    has_rxry = _bit_set(abs_bits, ABS_RX) and _bit_set(abs_bits, ABS_RY)
+    has_gear_btns = _bit_set(key_bits, BTN_GEAR_DOWN) or _bit_set(key_bits, BTN_GEAR_UP)
+    hm.wheel_use_gear_shifters = has_gear_btns
 
-    if _bit_set(abs_bits, ABS_RX) and _bit_set(abs_bits, ABS_RY):
-        hm.rx_code, hm.ry_code = ABS_RX, ABS_RY
-        hm.lt_code = ABS_Z if _bit_set(abs_bits, ABS_Z) else -1
-        hm.rt_code = ABS_RZ if _bit_set(abs_bits, ABS_RZ) else -1
-    elif _bit_set(abs_bits, ABS_Z) and _bit_set(abs_bits, ABS_RZ):
-        hm.rx_code, hm.ry_code = ABS_Z, ABS_RZ
-        hm.lt_code, hm.rt_code = -1, -1
-    else:
+    no_y_pedals = has_x and not has_y and (has_z or has_rz or has_throttle)
+    hm.is_wheel = bool(
+        is_wheel_device_name(name)
+        or has_wheel_axis
+        or has_gas
+        or has_brake
+        or has_gear_btns
+        or no_y_pedals
+    )
+
+    if hm.is_wheel:
+        hm.lx_code = ABS_WHEEL if has_wheel_axis else (ABS_X if has_x else -1)
+        hm.ly_code = -1
         hm.rx_code, hm.ry_code = -1, -1
         hm.lt_code, hm.rt_code = -1, -1
 
-    if hm.lt_code < 0 and _bit_set(abs_bits, ABS_BRAKE):
-        hm.lt_code = ABS_BRAKE
-    if hm.rt_code < 0 and _bit_set(abs_bits, ABS_GAS):
-        hm.rt_code = ABS_GAS
+        if has_gas:
+            hm.rt_code = ABS_GAS
+        elif has_throttle:
+            hm.rt_code = ABS_THROTTLE
+        elif has_rz:
+            hm.rt_code = ABS_RZ
+        elif has_z and not has_brake:
+            hm.rt_code = ABS_Z
+
+        if has_brake:
+            hm.lt_code = ABS_BRAKE
+        elif has_z and hm.rt_code != ABS_Z:
+            hm.lt_code = ABS_Z
+        elif has_rz and hm.rt_code != ABS_RZ:
+            hm.lt_code = ABS_RZ
+        elif has_y and hm.rt_code >= 0 and hm.rt_code != ABS_Y and not has_rxry:
+            hm.lt_code = ABS_Y
+
+        if has_y and not (has_gas or has_brake or has_throttle or has_z or has_rz):
+            hm.combo_pedal_code = ABS_Y
+        elif hm.rt_code >= 0 and hm.lt_code < 0:
+            hm.combo_pedal_code = hm.rt_code
+        elif hm.lt_code >= 0 and hm.rt_code < 0:
+            hm.combo_pedal_code = hm.lt_code
+    else:
+        if not (has_x and has_y):
+            hm.lx_code, hm.ly_code = -1, -1
+
+        if has_rxry:
+            hm.rx_code, hm.ry_code = ABS_RX, ABS_RY
+            hm.lt_code = ABS_Z if has_z else -1
+            hm.rt_code = ABS_RZ if has_rz else -1
+        elif has_z and has_rz:
+            hm.rx_code, hm.ry_code = ABS_Z, ABS_RZ
+            hm.lt_code, hm.rt_code = -1, -1
+        else:
+            hm.rx_code, hm.ry_code = -1, -1
+            hm.lt_code, hm.rt_code = -1, -1
+
+        if hm.lt_code < 0 and has_brake:
+            hm.lt_code = ABS_BRAKE
+        if hm.rt_code < 0 and has_gas:
+            hm.rt_code = ABS_GAS
 
     if hm.lt_code < 0 and _bit_set(key_bits, BTN_TL2):
         hm.dig_lt_code = BTN_TL2
@@ -503,6 +667,7 @@ def probe_hardware_map(fd: int) -> HardwareAxisMap:
     hm.ry_bounds = bounds(hm.ry_code, -32768, 32767)
     hm.lt_bounds = bounds(hm.lt_code, 0, 1023)
     hm.rt_bounds = bounds(hm.rt_code, 0, 1023)
+    hm.combo_bounds = bounds(hm.combo_pedal_code, -32768, 32767)
     return hm
 
 
@@ -606,6 +771,7 @@ class ControllerReaderThread(QThread):
             ry = read_abs_value(fd, hm.ry_code)
             lt = read_abs_value(fd, hm.lt_code)
             rt = read_abs_value(fd, hm.rt_code)
+            combo = read_abs_value(fd, hm.combo_pedal_code)
             if lx is not None:
                 state.raw_lx = scale_hw_to_i16(lx, *hm.lx_bounds)
             if ly is not None:
@@ -615,9 +781,13 @@ class ControllerReaderThread(QThread):
             if ry is not None:
                 state.raw_ry = scale_hw_to_i16(ry, *hm.ry_bounds)
             if lt is not None:
-                state.lt = scale_trig_to_1023(lt, *hm.lt_bounds)
+                state.raw_lt = scale_trig_to_1023(lt, *hm.lt_bounds)
+                state.lt = state.raw_lt
             if rt is not None:
-                state.rt = scale_trig_to_1023(rt, *hm.rt_bounds)
+                state.raw_rt = scale_trig_to_1023(rt, *hm.rt_bounds)
+                state.rt = state.raw_rt
+            if combo is not None:
+                self._raw_combo_pedal = scale_hw_to_i16(combo, *hm.combo_bounds)
         else:
             for ax, attr in (
                 (ABS_X, "out_lx"),
@@ -650,10 +820,12 @@ class ControllerReaderThread(QThread):
         if ev_type == EV_KEY:
             if not is_virtual:
                 if ev_code == hm.dig_lt_code:
-                    state.lt = 1023 if ev_val else 0
+                    state.raw_lt = 1023 if ev_val else 0
+                    state.lt = state.raw_lt
                     return
                 if ev_code == hm.dig_rt_code:
-                    state.rt = 1023 if ev_val else 0
+                    state.raw_rt = 1023 if ev_val else 0
+                    state.rt = state.raw_rt
                     return
                 if hm.use_dpad_btns and ev_code in (
                     BTN_DPAD_UP,
@@ -667,10 +839,16 @@ class ControllerReaderThread(QThread):
                     state.hat_y = dpad_bits[1] - dpad_bits[0]
                     return
             name = (
-                GENERIC_JOY_BUTTON_MAP.get(ev_code)
-                if (not is_virtual and hm.use_generic_joy_btns)
-                else BUTTON_CODE_MAP.get(ev_code)
+                WHEEL_SHIFTER_MAP.get(ev_code)
+                if not is_virtual
+                else None
             )
+            if name is None:
+                name = (
+                    GENERIC_JOY_BUTTON_MAP.get(ev_code)
+                    if (not is_virtual and hm.use_generic_joy_btns)
+                    else BUTTON_CODE_MAP.get(ev_code)
+                )
             if name is not None:
                 state.buttons[name] = bool(ev_val)
             return
@@ -694,6 +872,8 @@ class ControllerReaderThread(QThread):
                 elif ev_code == ABS_RZ:
                     state.rt = ev_val
             else:
+                if hm.combo_pedal_code >= 0 and ev_code == hm.combo_pedal_code:
+                    self._raw_combo_pedal = scale_hw_to_i16(ev_val, *hm.combo_bounds)
                 if ev_code == hm.lx_code:
                     state.raw_lx = scale_hw_to_i16(ev_val, *hm.lx_bounds)
                 elif ev_code == hm.ly_code:
@@ -703,9 +883,11 @@ class ControllerReaderThread(QThread):
                 elif ev_code == hm.ry_code:
                     state.raw_ry = scale_hw_to_i16(ev_val, *hm.ry_bounds)
                 elif ev_code == hm.lt_code:
-                    state.lt = scale_trig_to_1023(ev_val, *hm.lt_bounds)
+                    state.raw_lt = scale_trig_to_1023(ev_val, *hm.lt_bounds)
+                    state.lt = state.raw_lt
                 elif ev_code == hm.rt_code:
-                    state.rt = scale_trig_to_1023(ev_val, *hm.rt_bounds)
+                    state.raw_rt = scale_trig_to_1023(ev_val, *hm.rt_bounds)
+                    state.rt = state.raw_rt
 
     def _step_calibration(self, state: ControllerState, has_raw_source: bool) -> None:
         with self._lock:
@@ -757,6 +939,7 @@ class ControllerReaderThread(QThread):
         stream_is_virtual = False
         hm = HardwareAxisMap()
         dpad_bits = [0, 0, 0, 0]
+        self._raw_combo_pedal = 0
         last_discover = 0.0
         last_emit = 0.0
         last_virtual_event_at = 0.0
@@ -795,11 +978,14 @@ class ControllerReaderThread(QThread):
                         devices = new_devices
                         hm = HardwareAxisMap()
                         dpad_bits = [0, 0, 0, 0]
+                        self._raw_combo_pedal = 0
 
+                        family = detect_controller_family(
+                            devices.physical_name, devices.physical_vid_pid
+                        )
                         state = ControllerState(
-                            controller_family=detect_controller_family(
-                                devices.physical_name, devices.physical_vid_pid
-                            ),
+                            controller_family=family,
+                            is_wheel=(family == "wheel"),
                             physical_path=devices.physical_path,
                             physical_name=devices.physical_name,
                             physical_vid_pid=devices.physical_vid_pid,
@@ -812,7 +998,10 @@ class ControllerReaderThread(QThread):
                         if raw_path is not None:
                             raw_fd = _open_readonly(raw_path)
                             if raw_fd is not None:
-                                hm = probe_hardware_map(raw_fd)
+                                hm = probe_hardware_map(raw_fd, devices.physical_name or "")
+                                if hm.is_wheel:
+                                    state.is_wheel = True
+                                    state.controller_family = "wheel"
                                 state.supported_extra_keys = read_supported_extra_keys(
                                     raw_fd
                                 )
@@ -911,7 +1100,18 @@ class ControllerReaderThread(QThread):
                     ly_v = read_abs_value(raw_fd, hm.ly_code)
                     rx_v = read_abs_value(raw_fd, hm.rx_code)
                     ry_v = read_abs_value(raw_fd, hm.ry_code)
-                    if lx_v is None and ly_v is None and rx_v is None and ry_v is None:
+                    combo_v = read_abs_value(raw_fd, hm.combo_pedal_code)
+                    lt_v = read_abs_value(raw_fd, hm.lt_code)
+                    rt_v = read_abs_value(raw_fd, hm.rt_code)
+                    if (
+                        lx_v is None
+                        and ly_v is None
+                        and rx_v is None
+                        and ry_v is None
+                        and combo_v is None
+                        and lt_v is None
+                        and rt_v is None
+                    ):
                         if raw_fd != stream_fd:
                             _safe_close(raw_fd)
                         raw_fd = None
@@ -936,6 +1136,21 @@ class ControllerReaderThread(QThread):
                             s_ry = scale_hw_to_i16(ry_v, *hm.ry_bounds)
                             if s_ry != state.raw_ry:
                                 state.raw_ry = s_ry
+                                dirty = True
+                        if combo_v is not None:
+                            s_combo = scale_hw_to_i16(combo_v, *hm.combo_bounds)
+                            if s_combo != self._raw_combo_pedal:
+                                self._raw_combo_pedal = s_combo
+                                dirty = True
+                        if lt_v is not None:
+                            s_lt = scale_trig_to_1023(lt_v, *hm.lt_bounds)
+                            if s_lt != state.raw_lt:
+                                state.raw_lt = s_lt
+                                dirty = True
+                        if rt_v is not None:
+                            s_rt = scale_trig_to_1023(rt_v, *hm.rt_bounds)
+                            if s_rt != state.raw_rt:
+                                state.raw_rt = s_rt
                                 dirty = True
 
                         cur_pressed = read_raw_pressed_codes(raw_fd)
@@ -967,34 +1182,19 @@ class ControllerReaderThread(QThread):
                             )
                             raw_btns = empty_buttons()
                             for code, bname in btn_map.items():
-                                raw_btns[bname] = code in cur_pressed
+                                if code in cur_pressed:
+                                    raw_btns[bname] = True
+                            for code, bname in WHEEL_SHIFTER_MAP.items():
+                                if code in cur_pressed:
+                                    raw_btns[bname] = True
                             if raw_btns != state.buttons:
                                 state.buttons = raw_btns
                                 dirty = True
 
-                            lt_v = read_abs_value(raw_fd, hm.lt_code)
-                            rt_v = read_abs_value(raw_fd, hm.rt_code)
-                            new_lt = (
-                                (1023 if hm.dig_lt_code in cur_pressed else 0)
-                                if hm.dig_lt_code >= 0
-                                else (
-                                    scale_trig_to_1023(lt_v, *hm.lt_bounds)
-                                    if lt_v is not None
-                                    else state.lt
-                                )
-                            )
-                            new_rt = (
-                                (1023 if hm.dig_rt_code in cur_pressed else 0)
-                                if hm.dig_rt_code >= 0
-                                else (
-                                    scale_trig_to_1023(rt_v, *hm.rt_bounds)
-                                    if rt_v is not None
-                                    else state.rt
-                                )
-                            )
-                            if new_lt != state.lt or new_rt != state.rt:
-                                state.lt, state.rt = new_lt, new_rt
-                                dirty = True
+                            if hm.dig_lt_code >= 0:
+                                state.raw_lt = 1023 if hm.dig_lt_code in cur_pressed else 0
+                            if hm.dig_rt_code >= 0:
+                                state.raw_rt = 1023 if hm.dig_rt_code in cur_pressed else 0
 
                             if hm.use_dpad_btns:
                                 new_hx = (1 if BTN_DPAD_RIGHT in cur_pressed else 0) - (
@@ -1028,34 +1228,76 @@ class ControllerReaderThread(QThread):
                 ):
                     with self._lock:
                         cfg = self._config
-                    ox_l, oy_l = compute_corrected_stick(
-                        state.raw_lx,
-                        state.raw_ly,
-                        cfg.center_lx,
-                        cfg.center_ly,
-                        cfg.dz_l,
-                        cfg.response_curve,
-                        cfg.dz_mode,
-                        cfg.outer_comp_l,
+                    use_wheel = (cfg.wheel_mode == "wheel") or (
+                        cfg.wheel_mode == "auto" and hm.is_wheel
                     )
-                    ox_r, oy_r = compute_corrected_stick(
-                        state.raw_rx,
-                        state.raw_ry,
-                        cfg.center_rx,
-                        cfg.center_ry,
-                        cfg.dz_r,
-                        cfg.response_curve,
-                        cfg.dz_mode,
-                        cfg.outer_comp_r,
-                    )
+                    if use_wheel:
+                        ox_l = compute_wheel_steering(
+                            state.raw_lx,
+                            cfg.center_lx,
+                            cfg.wheel_steer_dz,
+                            cfg.wheel_steer_sat,
+                            cfg.wheel_linearity,
+                        )
+                        oy_l, ox_r, oy_r = 0, 0, 0
+                        combined_active = cfg.wheel_combined_pedals or (
+                            hm.combo_pedal_code >= 0
+                            and hm.lt_code < 0
+                            and hm.rt_code < 0
+                        )
+                        if combined_active:
+                            raw_b, raw_g = split_combined_pedals(self._raw_combo_pedal)
+                        else:
+                            raw_b, raw_g = state.raw_lt, state.raw_rt
+                        out_lt = compute_wheel_pedal(
+                            raw_b,
+                            cfg.wheel_dz_brake,
+                            cfg.wheel_max_brake,
+                            cfg.wheel_invert_brake,
+                            cfg.hair_trigger,
+                        )
+                        out_rt = compute_wheel_pedal(
+                            raw_g,
+                            cfg.wheel_dz_gas,
+                            cfg.wheel_max_gas,
+                            cfg.wheel_invert_gas,
+                            cfg.hair_trigger,
+                        )
+                    else:
+                        ox_l, oy_l = compute_corrected_stick(
+                            state.raw_lx,
+                            state.raw_ly,
+                            cfg.center_lx,
+                            cfg.center_ly,
+                            cfg.dz_l,
+                            cfg.response_curve,
+                            cfg.dz_mode,
+                            cfg.outer_comp_l,
+                        )
+                        ox_r, oy_r = compute_corrected_stick(
+                            state.raw_rx,
+                            state.raw_ry,
+                            cfg.center_rx,
+                            cfg.center_ry,
+                            cfg.dz_r,
+                            cfg.response_curve,
+                            cfg.dz_mode,
+                            cfg.outer_comp_r,
+                        )
+                        out_lt = apply_hair_trigger(state.raw_lt, cfg.hair_trigger)
+                        out_rt = apply_hair_trigger(state.raw_rt, cfg.hair_trigger)
+
                     if (
                         ox_l != state.out_lx
                         or oy_l != state.out_ly
                         or ox_r != state.out_rx
                         or oy_r != state.out_ry
+                        or out_lt != state.lt
+                        or out_rt != state.rt
                     ):
                         state.out_lx, state.out_ly = ox_l, oy_l
                         state.out_rx, state.out_ry = ox_r, oy_r
+                        state.lt, state.rt = out_lt, out_rt
                         dirty = True
 
                 self._step_calibration(state, has_raw_source=(raw_fd is not None))
@@ -1069,6 +1311,7 @@ class ControllerReaderThread(QThread):
                     snapshot = ControllerState(
                         mode=state.mode,
                         controller_family=state.controller_family,
+                        is_wheel=state.is_wheel,
                         physical_path=state.physical_path,
                         physical_name=state.physical_name,
                         physical_vid_pid=state.physical_vid_pid,
@@ -1081,6 +1324,8 @@ class ControllerReaderThread(QThread):
                         raw_ly=state.raw_ly,
                         raw_rx=state.raw_rx,
                         raw_ry=state.raw_ry,
+                        raw_lt=state.raw_lt,
+                        raw_rt=state.raw_rt,
                         out_lx=state.out_lx,
                         out_ly=state.out_ly,
                         out_rx=state.out_rx,
