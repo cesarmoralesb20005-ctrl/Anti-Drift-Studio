@@ -62,6 +62,7 @@ from .eq_config import (
 _QUICK_PRESETS: tuple[tuple[str, str], ...] = (
     ("Plano (Neutro)", "Plano"),
     ("Gaming / Pasos FPS", "Pasos FPS"),
+    ("Motores / Racing", "Motores"),
     ("Graves Potentes", "Graves+"),
     ("Voces y Discord", "Voces"),
     ("Música (V-Shape)", "Música"),

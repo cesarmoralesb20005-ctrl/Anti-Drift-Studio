@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, fields, replace
 from pathlib import Path
 
 from .config import AntiDriftConfig
 
 DEFAULT_PROFILES_PATH = Path.home() / ".config" / "xbox-antidrift-profiles.json"
+
+_PROFILE_META_FIELDS = {"id", "name", "auto_process"}
 
 
 @dataclass
@@ -30,6 +32,12 @@ class GameProfile:
     debounce_ms: int = 0
     rumble_gain: int = 100
     swap_nintendo: bool = False
+    lt_dz: float = 0.00
+    rt_dz: float = 0.00
+    lt_max: float = 1.00
+    rt_max: float = 1.00
+    lt_curve: float = 1.00
+    rt_curve: float = 1.00
     wheel_mode: str = "auto"
     wheel_rotation_deg: int = 270
     wheel_steer_dz: float = 0.02
@@ -42,6 +50,16 @@ class GameProfile:
     wheel_invert_gas: bool = False
     wheel_invert_brake: bool = False
     wheel_combined_pedals: bool = False
+    wheel_shifter_mode: str = "paddles"
+    wheel_shifter_device: str = "auto"
+    wheel_shifter_down_btn: str = "LB"
+    wheel_shifter_up_btn: str = "RB"
+    wheel_handbrake_enabled: bool = True
+    wheel_handbrake_device: str = "auto"
+    wheel_handbrake_target: str = "A"
+    wheel_handbrake_dz: float = 0.20
+    wheel_handbrake_invert: bool = False
+    wheel_clutch_mode: str = "none"
 
     def copy(self) -> GameProfile:
         return replace(self)
@@ -50,69 +68,21 @@ class GameProfile:
     def from_config(
         cls, profile_id: str, name: str, cfg: AntiDriftConfig, auto_process: str = ""
     ) -> GameProfile:
-        return cls(
-            id=profile_id,
-            name=name,
-            auto_process=auto_process,
-            dz_l=cfg.dz_l,
-            dz_r=cfg.dz_r,
-            dz_mode=cfg.dz_mode,
-            outer_comp_l=cfg.outer_comp_l,
-            outer_comp_r=cfg.outer_comp_r,
-            low_latency=cfg.low_latency,
-            response_curve=cfg.response_curve,
-            hair_trigger=cfg.hair_trigger,
-            debounce_ms=cfg.debounce_ms,
-            rumble_gain=cfg.rumble_gain,
-            swap_nintendo=cfg.swap_nintendo,
-            wheel_mode=cfg.wheel_mode,
-            wheel_rotation_deg=cfg.wheel_rotation_deg,
-            wheel_steer_dz=cfg.wheel_steer_dz,
-            wheel_steer_sat=cfg.wheel_steer_sat,
-            wheel_linearity=cfg.wheel_linearity,
-            wheel_dz_gas=cfg.wheel_dz_gas,
-            wheel_dz_brake=cfg.wheel_dz_brake,
-            wheel_max_gas=cfg.wheel_max_gas,
-            wheel_max_brake=cfg.wheel_max_brake,
-            wheel_invert_gas=cfg.wheel_invert_gas,
-            wheel_invert_brake=cfg.wheel_invert_brake,
-            wheel_combined_pedals=cfg.wheel_combined_pedals,
-        )
+        kwargs = {
+            f.name: getattr(cfg, f.name)
+            for f in fields(cls)
+            if f.name not in _PROFILE_META_FIELDS
+        }
+        return cls(id=profile_id, name=name, auto_process=auto_process, **kwargs)
 
     def apply_to_config(self, base: AntiDriftConfig) -> AntiDriftConfig:
         """Apply profile tuning while preserving calibrated stick centers and device."""
-        return AntiDriftConfig(
-            center_lx=base.center_lx,
-            center_ly=base.center_ly,
-            dz_l=self.dz_l,
-            center_rx=base.center_rx,
-            center_ry=base.center_ry,
-            dz_r=self.dz_r,
-            dz_mode=self.dz_mode,
-            outer_comp_l=self.outer_comp_l,
-            outer_comp_r=self.outer_comp_r,
-            low_latency=self.low_latency,
-            response_curve=self.response_curve,
-            hair_trigger=self.hair_trigger,
-            debounce_ms=self.debounce_ms,
-            rumble_gain=self.rumble_gain,
-            swap_nintendo=self.swap_nintendo,
-            multi_controller=base.multi_controller,
-            device_path=base.device_path,
-            virtual_name=base.virtual_name,
-            wheel_mode=self.wheel_mode,
-            wheel_rotation_deg=self.wheel_rotation_deg,
-            wheel_steer_dz=self.wheel_steer_dz,
-            wheel_steer_sat=self.wheel_steer_sat,
-            wheel_linearity=self.wheel_linearity,
-            wheel_dz_gas=self.wheel_dz_gas,
-            wheel_dz_brake=self.wheel_dz_brake,
-            wheel_max_gas=self.wheel_max_gas,
-            wheel_max_brake=self.wheel_max_brake,
-            wheel_invert_gas=self.wheel_invert_gas,
-            wheel_invert_brake=self.wheel_invert_brake,
-            wheel_combined_pedals=self.wheel_combined_pedals,
-        ).clamped()
+        updates = {
+            f.name: getattr(self, f.name)
+            for f in fields(self)
+            if f.name not in _PROFILE_META_FIELDS
+        }
+        return replace(base, **updates).clamped()
 
 
 @dataclass
@@ -175,6 +145,23 @@ def default_profiles() -> list[GameProfile]:
             debounce_ms=0,
         ),
         GameProfile(
+            id="racing_gamepad",
+            name="Carreras (Mando · Freno 60%)",
+            auto_process="",
+            dz_l=0.08,
+            dz_r=0.12,
+            dz_mode="axial",
+            low_latency=True,
+            response_curve=1.00,
+            hair_trigger=False,
+            lt_dz=0.02,
+            lt_max=0.60,
+            lt_curve=1.20,
+            rt_dz=0.02,
+            rt_max=1.00,
+            rt_curve=1.10,
+        ),
+        GameProfile(
             id="racing_wheel",
             name="Volante Racing (T80 / Sim)",
             auto_process="",
@@ -192,8 +179,33 @@ def default_profiles() -> list[GameProfile]:
             wheel_linearity=1.00,
             wheel_dz_gas=0.03,
             wheel_dz_brake=0.04,
+            wheel_shifter_mode="paddles",
+            wheel_handbrake_enabled=True,
         ),
     ]
+
+
+def _profile_from_dict(item: dict, idx: int) -> GameProfile:
+    defaults = GameProfile(
+        id=str(item.get("id", f"p_{idx}")),
+        name=str(item.get("name", f"Perfil {idx + 1}")),
+        auto_process=str(item.get("auto_process", "")),
+    )
+    updates: dict[str, object] = {}
+    for f in fields(GameProfile):
+        if f.name in _PROFILE_META_FIELDS or f.name not in item:
+            continue
+        cur = getattr(defaults, f.name)
+        val = item[f.name]
+        if isinstance(cur, bool):
+            updates[f.name] = bool(val)
+        elif isinstance(cur, int):
+            updates[f.name] = int(val)
+        elif isinstance(cur, float):
+            updates[f.name] = float(val)
+        else:
+            updates[f.name] = str(val)
+    return replace(defaults, **updates)
 
 
 def load_profile_store(path: Path = DEFAULT_PROFILES_PATH) -> ProfileStore:
@@ -208,37 +220,7 @@ def load_profile_store(path: Path = DEFAULT_PROFILES_PATH) -> ProfileStore:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         raw_profiles = data.get("profiles") or []
-        profiles = [
-            GameProfile(
-                id=str(item.get("id", f"p_{idx}")),
-                name=str(item.get("name", f"Perfil {idx + 1}")),
-                auto_process=str(item.get("auto_process", "")),
-                dz_l=float(item.get("dz_l", 0.12)),
-                dz_r=float(item.get("dz_r", 0.12)),
-                dz_mode=str(item.get("dz_mode", "axial")),
-                outer_comp_l=float(item.get("outer_comp_l", 0.0)),
-                outer_comp_r=float(item.get("outer_comp_r", 0.0)),
-                low_latency=bool(item.get("low_latency", False)),
-                response_curve=float(item.get("response_curve", 1.00)),
-                hair_trigger=bool(item.get("hair_trigger", False)),
-                debounce_ms=int(item.get("debounce_ms", 0)),
-                rumble_gain=int(item.get("rumble_gain", 100)),
-                swap_nintendo=bool(item.get("swap_nintendo", False)),
-                wheel_mode=str(item.get("wheel_mode", "auto")),
-                wheel_rotation_deg=int(item.get("wheel_rotation_deg", 270)),
-                wheel_steer_dz=float(item.get("wheel_steer_dz", 0.02)),
-                wheel_steer_sat=float(item.get("wheel_steer_sat", 1.00)),
-                wheel_linearity=float(item.get("wheel_linearity", 1.00)),
-                wheel_dz_gas=float(item.get("wheel_dz_gas", 0.03)),
-                wheel_dz_brake=float(item.get("wheel_dz_brake", 0.04)),
-                wheel_max_gas=float(item.get("wheel_max_gas", 1.00)),
-                wheel_max_brake=float(item.get("wheel_max_brake", 1.00)),
-                wheel_invert_gas=bool(item.get("wheel_invert_gas", False)),
-                wheel_invert_brake=bool(item.get("wheel_invert_brake", False)),
-                wheel_combined_pedals=bool(item.get("wheel_combined_pedals", False)),
-            )
-            for idx, item in enumerate(raw_profiles)
-        ]
+        profiles = [_profile_from_dict(item, idx) for idx, item in enumerate(raw_profiles)]
         if not profiles:
             profiles = default_profiles()
         return ProfileStore(

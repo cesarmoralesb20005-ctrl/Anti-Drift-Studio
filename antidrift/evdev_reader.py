@@ -19,6 +19,7 @@ from .config import (
     AntiDriftConfig,
     apply_hair_trigger,
     compute_corrected_stick,
+    compute_trigger_output,
     compute_wheel_pedal,
     compute_wheel_steering,
     scale_hw_to_i16,
@@ -133,6 +134,8 @@ class HardwareAxisMap:
     dig_rt_code: int = -1
     is_wheel: bool = False
     combo_pedal_code: int = -1
+    clutch_code: int = -1
+    handbrake_code: int = -1
     use_generic_joy_btns: bool = False
     use_dpad_btns: bool = False
     wheel_use_gear_shifters: bool = False
@@ -144,6 +147,17 @@ class HardwareAxisMap:
     lt_bounds: tuple[int, int] = (0, 1023)
     rt_bounds: tuple[int, int] = (0, 1023)
     combo_bounds: tuple[int, int] = (-32768, 32767)
+    clutch_bounds: tuple[int, int] = (0, 1023)
+    handbrake_bounds: tuple[int, int] = (0, 1023)
+
+
+@dataclass
+class SimAuxDeviceInfo:
+    """Metadata for an auxiliary USB Shifter or Handbrake evdev device."""
+
+    path: str
+    name: str
+    kind: str  # "shifter" | "handbrake"
 
 
 @dataclass
@@ -280,6 +294,9 @@ class ControllerState:
 
     lt: int = 0
     rt: int = 0
+    clutch: int = 0
+    handbrake: int = 0
+    shifter_gear: str = ""
     hat_x: int = 0
     hat_y: int = 0
     poll_hz: float = 0.0
@@ -458,6 +475,71 @@ def _score_gamepad(ev_sys: Path) -> ControllerDeviceInfo | None:
     )
 
 
+def list_sim_aux_devices(
+    exclude_path: str | None = None,
+) -> tuple[list[SimAuxDeviceInfo], list[SimAuxDeviceInfo]]:
+    """Scan connected USB Shifter and Handbrake auxiliary evdev devices."""
+    shifters: list[SimAuxDeviceInfo] = []
+    handbrakes: list[SimAuxDeviceInfo] = []
+    for ev_sys in sorted(Path("/sys/class/input").glob("event*")):
+        dev_node = f"/dev/input/{ev_sys.name}"
+        if exclude_path and dev_node == exclude_path:
+            continue
+        dev_dir = ev_sys / "device"
+        name = _read_sys_text(dev_dir / "name")
+        if not name:
+            continue
+        uevent = _parse_uevent(dev_dir / "uevent")
+        if _is_virtual_sys_device(ev_sys, name, uevent.get("PHYS", "")):
+            continue
+        low = name.lower()
+        if any(
+            bad in low
+            for bad in ("mouse", "touchpad", "keyboard", "motion", "power button", "video bus")
+        ):
+            continue
+        fd = _open_readonly(dev_node)
+        if fd is None:
+            continue
+        try:
+            key_bits = bytearray(KEY_BUF_LEN)
+            abs_bits = bytearray(8)
+            fcntl.ioctl(fd, EVIOCGBIT_KEY_96, key_bits)
+            fcntl.ioctl(fd, EVIOCGBIT_ABS_8, abs_bits)
+            if _bit_set(key_bits, BTN_LEFT) or (
+                _bit_set(key_bits, 30) and _bit_set(key_bits, 28)
+            ):
+                continue
+            abs_cnt = sum(1 for a in range(0, 0x29) if _bit_set(abs_bits, a))
+            joy_cnt = sum(
+                1 for b in list(range(288, 338)) + list(range(704, 724)) if _bit_set(key_bits, b)
+            )
+            has_sticks = (
+                _bit_set(abs_bits, ABS_X)
+                and _bit_set(abs_bits, ABS_Y)
+                and _bit_set(abs_bits, ABS_RX)
+                and _bit_set(abs_bits, ABS_RY)
+            )
+            is_hb_name = any(
+                k in low for k in ("handbrake", "freno", "tss", "heusinkveld")
+            )
+            is_sim_mcu = any(
+                k in low for k in ("arduino", "leonardo", "pro micro", "stm32", "esp32", "sim")
+            )
+            is_sh_name = any(
+                k in low for k in ("shifter", "palanca", "cambio", "th8", "shh", "gear")
+            )
+            if 1 <= abs_cnt <= 3 and joy_cnt <= 4 and (is_hb_name or is_sim_mcu):
+                handbrakes.append(SimAuxDeviceInfo(dev_node, name, "handbrake"))
+            if not has_sticks and joy_cnt >= 2 and (is_sh_name or (abs_cnt == 0 and joy_cnt <= 20)):
+                shifters.append(SimAuxDeviceInfo(dev_node, name, "shifter"))
+        except OSError:
+            continue
+        finally:
+            _safe_close(fd)
+    return shifters, handbrakes
+
+
 def list_physical_controllers() -> list[ControllerDeviceInfo]:
     """Return all connected physical gamepads sorted by suitability score."""
     items: list[ControllerDeviceInfo] = []
@@ -625,6 +707,20 @@ def probe_hardware_map(fd: int, device_name: str = "") -> HardwareAxisMap:
             hm.combo_pedal_code = hm.rt_code
         elif hm.lt_code >= 0 and hm.rt_code < 0:
             hm.combo_pedal_code = hm.lt_code
+
+        if _bit_set(abs_bits, ABS_RUDDER):
+            hm.handbrake_code = ABS_RUDDER
+        if has_throttle and hm.rt_code != ABS_THROTTLE and hm.lt_code != ABS_THROTTLE:
+            hm.clutch_code = ABS_THROTTLE
+        elif (
+            has_y
+            and hm.lt_code >= 0
+            and hm.rt_code >= 0
+            and hm.lt_code != ABS_Y
+            and hm.rt_code != ABS_Y
+            and not has_rxry
+        ):
+            hm.clutch_code = ABS_Y
     else:
         if not (has_x and has_y):
             hm.lx_code, hm.ly_code = -1, -1
@@ -668,6 +764,8 @@ def probe_hardware_map(fd: int, device_name: str = "") -> HardwareAxisMap:
     hm.lt_bounds = bounds(hm.lt_code, 0, 1023)
     hm.rt_bounds = bounds(hm.rt_code, 0, 1023)
     hm.combo_bounds = bounds(hm.combo_pedal_code, -32768, 32767)
+    hm.clutch_bounds = bounds(hm.clutch_code, 0, 1023)
+    hm.handbrake_bounds = bounds(hm.handbrake_code, 0, 1023)
     return hm
 
 
@@ -1152,6 +1250,20 @@ class ControllerReaderThread(QThread):
                             if s_rt != state.raw_rt:
                                 state.raw_rt = s_rt
                                 dirty = True
+                        if hm.clutch_code >= 0:
+                            cl_v = read_abs_value(raw_fd, hm.clutch_code)
+                            if cl_v is not None:
+                                s_cl = scale_trig_to_1023(cl_v, *hm.clutch_bounds)
+                                if s_cl != state.clutch:
+                                    state.clutch = s_cl
+                                    dirty = True
+                        if hm.handbrake_code >= 0:
+                            hb_v = read_abs_value(raw_fd, hm.handbrake_code)
+                            if hb_v is not None:
+                                s_hb = scale_trig_to_1023(hb_v, *hm.handbrake_bounds)
+                                if s_hb != state.handbrake:
+                                    state.handbrake = s_hb
+                                    dirty = True
 
                         cur_pressed = read_raw_pressed_codes(raw_fd)
                         newly_pressed = cur_pressed - prev_raw_pressed
@@ -1284,8 +1396,20 @@ class ControllerReaderThread(QThread):
                             cfg.dz_mode,
                             cfg.outer_comp_r,
                         )
-                        out_lt = apply_hair_trigger(state.raw_lt, cfg.hair_trigger)
-                        out_rt = apply_hair_trigger(state.raw_rt, cfg.hair_trigger)
+                        out_lt = compute_trigger_output(
+                            state.raw_lt,
+                            cfg.lt_dz,
+                            cfg.lt_max,
+                            cfg.lt_curve,
+                            cfg.hair_trigger,
+                        )
+                        out_rt = compute_trigger_output(
+                            state.raw_rt,
+                            cfg.rt_dz,
+                            cfg.rt_max,
+                            cfg.rt_curve,
+                            cfg.hair_trigger,
+                        )
 
                     if (
                         ox_l != state.out_lx
@@ -1332,6 +1456,9 @@ class ControllerReaderThread(QThread):
                         out_ry=state.out_ry,
                         lt=state.lt,
                         rt=state.rt,
+                        clutch=state.clutch,
+                        handbrake=state.handbrake,
+                        shifter_gear=state.shifter_gear,
                         hat_x=state.hat_x,
                         hat_y=state.hat_y,
                         poll_hz=state.poll_hz,

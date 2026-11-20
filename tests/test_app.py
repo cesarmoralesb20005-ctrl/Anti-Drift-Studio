@@ -403,7 +403,14 @@ class ServiceAndUiTests(unittest.TestCase):
         win._swap_nintendo_chk.setChecked(True)
         self._app.processEvents()
 
-        # Verify steering wheel card UI & live wheel state updates
+        # Verify gamepad triggers panel (LT/RT max limiters) on gamepad page
+        self.assertEqual(win._mode_stack.currentIndex(), 0)
+        win._trig_widgets["LT"]["max_slider"].setValue(50)
+        self._app.processEvents()
+        self.assertAlmostEqual(win._config.lt_max, 0.50, places=2)
+        self.assertEqual(win._trig_widgets["LT"]["badge"].text(), "Tope: 50%")
+
+        # Verify steering wheel full mode switch + shifter + handbrake + clutch UI
         win._on_controller_state(
             ControllerState(
                 mode="virtual",
@@ -415,22 +422,43 @@ class ServiceAndUiTests(unittest.TestCase):
                 out_lx=16384,
                 lt=0,
                 rt=820,
+                handbrake=700,
+                shifter_gear="3",
                 poll_hz=250.0,
             )
         )
         self._app.processEvents()
-        self.assertTrue(win._wheel_toggle.isChecked())
+        self.assertEqual(win._mode_stack.currentIndex(), 1)
         self.assertEqual(win._family_btn.text(), "Auto: Volante ▾")
         self.assertIn("Giro", win._active_buttons_label.text())
         self.assertIn("Gas", win._active_buttons_label.text())
+        self.assertIn("F.Mano", win._active_buttons_label.text())
+        self.assertIn("Marcha 3", win._active_buttons_label.text())
         win._wheel_rot_btns[240].click()
         self.assertEqual(win._config.wheel_rotation_deg, 240)
+        win._wheel_shifter_btns["h_shifter"].click()
+        self.assertEqual(win._config.wheel_shifter_mode, "h_shifter")
+        win._wheel_hb_dz_slider.setValue(30)
+        self.assertAlmostEqual(win._config.wheel_handbrake_dz, 0.30, places=2)
         win._wheel_inv_gas_chk.setChecked(True)
         self.assertTrue(win._config.wheel_invert_gas)
         win._wheel_combo_chk.setChecked(True)
         self.assertTrue(win._config.wheel_combined_pedals)
         win._wheel_inv_gas_chk.setChecked(False)
         win._wheel_combo_chk.setChecked(False)
+        win._trig_widgets["LT"]["max_slider"].setValue(100)
+        win._on_controller_state(
+            ControllerState(
+                mode="virtual",
+                controller_family="xbox",
+                is_wheel=False,
+                physical_name="Xbox Wireless Controller",
+                physical_stable_id="045e:0b13|back-pad",
+                poll_hz=250.0,
+            )
+        )
+        self._app.processEvents()
+        self.assertEqual(win._mode_stack.currentIndex(), 0)
 
         self.assertAlmostEqual(win._config.outer_comp_l, 0.14, places=2)
         self.assertEqual(win._config.debounce_ms, 18)
@@ -1262,11 +1290,97 @@ class SteeringWheelTests(unittest.TestCase):
             out_lx=16384,
             lt=0,
             rt=800,
+            clutch=450,
+            handbrake=720,
+            shifter_gear="4",
         )
         w.set_simulator_enabled(False)
         w.set_controller_state(st)
         self.assertEqual(w.active_family(), "wheel")
         w.grab()
+        app.processEvents()
+
+    def test_gamepad_triggers_and_shifter_handbrake_roundtrip(self) -> None:
+        from PySide6.QtCore import Qt
+        from PySide6.QtGui import QMouseEvent
+        from PySide6.QtWidgets import QApplication
+        from antidrift.config import (
+            AntiDriftConfig,
+            compute_trigger_output,
+            load_config,
+            save_config,
+        )
+        from antidrift.profiles import default_profiles
+        from antidrift.widgets.controller_widget import ControllerWidget, _SPECS
+
+        self.assertEqual(compute_trigger_output(1023, dz=0.0, max_out=0.50, curve=1.0), 512)
+        self.assertEqual(compute_trigger_output(512, dz=0.0, max_out=0.50, curve=1.0), 256)
+        self.assertEqual(compute_trigger_output(80, dz=0.10, max_out=0.50, curve=1.0), 0)
+        self.assertEqual(compute_trigger_output(500, dz=0.0, max_out=0.50, hair_trigger=True), 512)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "trig_sim.conf"
+            cfg = AntiDriftConfig(
+                lt_dz=0.05,
+                rt_dz=0.02,
+                lt_max=0.50,
+                rt_max=0.85,
+                lt_curve=1.35,
+                rt_curve=0.90,
+                wheel_shifter_mode="h_shifter",
+                wheel_shifter_device="/dev/input/event22",
+                wheel_shifter_down_btn="X",
+                wheel_shifter_up_btn="Y",
+                wheel_handbrake_enabled=True,
+                wheel_handbrake_device="/dev/input/event23",
+                wheel_handbrake_target="B",
+                wheel_handbrake_dz=0.30,
+                wheel_handbrake_invert=True,
+                wheel_clutch_mode="x_btn",
+            )
+            save_config(cfg, path=p)
+            loaded = load_config(path=p)
+            self.assertAlmostEqual(loaded.lt_max, 0.50, places=2)
+            self.assertAlmostEqual(loaded.rt_max, 0.85, places=2)
+            self.assertAlmostEqual(loaded.lt_curve, 1.35, places=2)
+            self.assertEqual(loaded.wheel_shifter_mode, "h_shifter")
+            self.assertEqual(loaded.wheel_shifter_device, "/dev/input/event22")
+            self.assertEqual(loaded.wheel_shifter_down_btn, "X")
+            self.assertEqual(loaded.wheel_shifter_up_btn, "Y")
+            self.assertEqual(loaded.wheel_handbrake_device, "/dev/input/event23")
+            self.assertEqual(loaded.wheel_handbrake_target, "B")
+            self.assertAlmostEqual(loaded.wheel_handbrake_dz, 0.30, places=2)
+            self.assertTrue(loaded.wheel_handbrake_invert)
+            self.assertEqual(loaded.wheel_clutch_mode, "x_btn")
+
+        profs = {p.id: p for p in default_profiles()}
+        self.assertIn("racing_gamepad", profs)
+        self.assertAlmostEqual(profs["racing_gamepad"].lt_max, 0.60, places=2)
+
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        app = QApplication.instance() or QApplication([])
+        cw = ControllerWidget()
+        cw.resize(600, 492)
+        cw.set_family_override("xbox")
+        cw.set_config_preview(AntiDriftConfig(lt_max=0.50))
+        cw.set_simulator_enabled(True)
+        scale, ox, oy = cw._transform_params()
+        from PySide6.QtCore import QPointF
+        lt_center = _SPECS["xbox"].lt_rect.center()
+        pt = QPointF(ox + lt_center.x() * scale, oy + lt_center.y() * scale)
+        cw.mousePressEvent(
+            QMouseEvent(
+                QMouseEvent.MouseButtonPress,
+                pt,
+                pt,
+                Qt.LeftButton,
+                Qt.LeftButton,
+                Qt.NoModifier,
+            )
+        )
+        self.assertEqual(cw._state.raw_lt, 1023)
+        self.assertEqual(cw._state.lt, 512)
+        cw.grab()
         app.processEvents()
 
 
@@ -1415,6 +1529,11 @@ class EqualizerSubsystemTests(unittest.TestCase):
         self.assertEqual(effective_preamp_db(fps_bands, 0.0, True), -5.5)
         self.assertEqual(effective_preamp_db(fps_bands, 2.0, False), 2.0)
         self.assertEqual(effective_preamp_db(fps_bands, 2.0, True, bypass=True), 0.0)
+
+        self.assertIn("Motores / Racing", EQ_PRESETS)
+        engine_bands = list(EQ_PRESETS["Motores / Racing"]["bands"])
+        self.assertGreater(engine_bands[1], 3.0)
+        self.assertGreater(engine_bands[7], 3.0)
 
         bass_bands = list(EQ_PRESETS["Graves Potentes"]["bands"])
         bass_curve = compute_eq_curve_db(bass_bands, 0.0, False, freqs_hz=[31.0, 1000.0, 16000.0])

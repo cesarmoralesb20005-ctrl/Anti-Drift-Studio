@@ -70,6 +70,11 @@ EQ_PRESETS: dict[str, dict[str, object]] = {
         "bands": [-2.0, -1.5, -2.5, -2.0, -0.5, 1.5, 4.0, 5.5, 4.5, 2.0],
         "desc": "Limpia graves retumbantes y realza pasos, recargas y detalle espacial.",
     },
+    "Motores / Racing": {
+        "preamp_db": 0.0,
+        "bands": [4.0, 5.5, 4.0, 2.5, 0.5, 2.0, 4.0, 4.5, 2.5, -1.5],
+        "desc": "Realza el rugido grave del escape, medios del motor y silbido del turbo.",
+    },
     "Graves Potentes": {
         "preamp_db": 0.0,
         "bands": [6.5, 5.5, 3.5, 1.5, 0.0, 0.0, 0.5, 1.0, 1.5, 1.5],

@@ -22,6 +22,7 @@ from ..config import (
     AntiDriftConfig,
     TRIGGER_MAX,
     compute_corrected_stick,
+    compute_trigger_output,
     compute_wheel_pedal,
     compute_wheel_steering,
 )
@@ -295,6 +296,20 @@ class ControllerWidget(QWidget):
             )
             self._state.out_lx, self._state.out_ly = ox_l, oy_l
             self._state.out_rx, self._state.out_ry = ox_r, oy_r
+            self._state.lt = compute_trigger_output(
+                self._state.raw_lt,
+                self._config.lt_dz,
+                self._config.lt_max,
+                self._config.lt_curve,
+                self._config.hair_trigger,
+            )
+            self._state.rt = compute_trigger_output(
+                self._state.raw_rt,
+                self._config.rt_dz,
+                self._config.rt_max,
+                self._config.rt_curve,
+                self._config.hair_trigger,
+            )
         self.update()
         self.simulated_state_changed.emit(self._state)
 
@@ -362,19 +377,19 @@ class ControllerWidget(QWidget):
             return
 
         if spec.lt_rect.adjusted(-4, -4, 4, 4).contains(p):
-            if spec.family == "wheel":
-                self._state.raw_lt = TRIGGER_MAX if self._state.raw_lt < 500 else 0
-            else:
-                self._state.lt = TRIGGER_MAX if self._state.lt < 500 else 0
+            self._state.raw_lt = TRIGGER_MAX if self._state.raw_lt < 500 else 0
             self._emit_sim()
             return
         if spec.rt_rect.adjusted(-4, -4, 4, 4).contains(p):
-            if spec.family == "wheel":
-                self._state.raw_rt = TRIGGER_MAX if self._state.raw_rt < 500 else 0
-            else:
-                self._state.rt = TRIGGER_MAX if self._state.rt < 500 else 0
+            self._state.raw_rt = TRIGGER_MAX if self._state.raw_rt < 500 else 0
             self._emit_sim()
             return
+
+        if spec.family == "wheel" and self._config.wheel_handbrake_enabled:
+            if QRectF(18, 126, 46, 152).contains(p):
+                self._state.handbrake = TRIGGER_MAX if self._state.handbrake < 500 else 0
+                self._emit_sim()
+                return
 
         if spec.share is not None:
             s_rect = QRectF(spec.share.x() - 13.0, spec.share.y() - 11.0, 26.0, 22.0)
@@ -488,9 +503,14 @@ class ControllerWidget(QWidget):
     def _draw_triggers_and_bumpers(
         self, p: QPainter, spec: _ControllerLayoutSpec
     ) -> None:
-        for label, val, rect in (
-            (spec.trigger_labels[0], self._state.lt, spec.lt_rect),
-            (spec.trigger_labels[1], self._state.rt, spec.rt_rect),
+        caps = (
+            (1.0, 1.0)
+            if spec.family == "wheel"
+            else (self._config.lt_max, self._config.rt_max)
+        )
+        for label, val, rect, cap in (
+            (spec.trigger_labels[0], self._state.lt, spec.lt_rect, caps[0]),
+            (spec.trigger_labels[1], self._state.rt, spec.rt_rect, caps[1]),
         ):
             frac = max(0.0, min(1.0, float(val) / float(TRIGGER_MAX)))
             p.setPen(QPen(QColor("#1E2630"), 1.3))
@@ -509,9 +529,20 @@ class ControllerWidget(QWidget):
                 p.setBrush(QColor("#059669"))
                 p.drawRoundedRect(fill_rect, 5, 5)
 
+            if cap < 0.99:
+                cap_y = rect.bottom() - rect.height() * max(0.10, cap)
+                p.setPen(QPen(QColor("#F59E0B"), 1.6, Qt.DashLine))
+                p.drawLine(
+                    QPointF(rect.left() + 3.0, cap_y),
+                    QPointF(rect.right() - 3.0, cap_y),
+                )
+                txt = f"{label} {round(frac * 100)}/{round(cap * 100)}%"
+            else:
+                txt = f"{label} {round(frac * 100)}%"
+
             p.setPen(QColor("#F8FAFC") if frac > 0.25 else QColor("#94A3B8"))
-            p.setFont(QFont("JetBrains Mono", 9, QFont.Bold))
-            p.drawText(rect, Qt.AlignCenter, f"{label} {round(frac * 100)}%")
+            p.setFont(QFont("JetBrains Mono", 8.5 if cap < 0.99 else 9.0, QFont.Bold))
+            p.drawText(rect, Qt.AlignCenter, txt)
 
         for label, pressed, rect in (
             (spec.bumper_labels[0], self._state.buttons.get("LB", False), spec.lb_rect),
@@ -666,6 +697,73 @@ class ControllerWidget(QWidget):
                 QPointF(cx + 122.0 * math.cos(out_rad), cy + 122.0 * math.sin(out_rad)),
                 QPointF(cx + 168.0 * math.cos(out_rad), cy + 168.0 * math.sin(out_rad)),
             )
+
+        # Handbrake vertical lever gauge (left side)
+        if self._config.wheel_handbrake_enabled:
+            hb_rect = QRectF(20, 130, 42, 144)
+            hb_frac = max(0.0, min(1.0, float(self._state.handbrake) / float(TRIGGER_MAX)))
+            hb_active = hb_frac >= self._config.wheel_handbrake_dz
+            p.setPen(QPen(QColor("#F59E0B") if hb_active else QColor("#242E3A"), 1.4))
+            p.setBrush(QColor("#07090C"))
+            p.drawRoundedRect(hb_rect, 7, 7)
+            if hb_frac > 0.01:
+                fh = hb_rect.height() * hb_frac
+                p.setPen(Qt.NoPen)
+                p.setBrush(QColor("#F59E0B") if hb_active else QColor("#059669"))
+                p.drawRoundedRect(
+                    QRectF(hb_rect.left() + 3, hb_rect.bottom() - fh + 3, hb_rect.width() - 6, max(4.0, fh - 6)),
+                    5,
+                    5,
+                )
+            dz_y = hb_rect.bottom() - hb_rect.height() * self._config.wheel_handbrake_dz
+            p.setPen(QPen(QColor("#EF4444"), 1.2, Qt.DashLine))
+            p.drawLine(QPointF(hb_rect.left() + 3, dz_y), QPointF(hb_rect.right() - 3, dz_y))
+            p.setPen(QColor("#F8FAFC") if hb_active else QColor("#94A3B8"))
+            p.setFont(QFont("JetBrains Mono", 7.5, QFont.Bold))
+            p.drawText(QRectF(12, 108, 58, 18), Qt.AlignCenter, "F.MANO")
+            p.drawText(hb_rect, Qt.AlignCenter, f"{round(hb_frac * 100)}%")
+
+        # Shifter / Gearbox panel (right side)
+        smode = self._config.wheel_shifter_mode
+        if smode != "none":
+            sh_rect = QRectF(534, 136, 52, 134)
+            shift_on = self._state.buttons.get("LB", False) or self._state.buttons.get("RB", False)
+            p.setPen(QPen(QColor("#10B981") if shift_on else QColor("#242E3A"), 1.4))
+            p.setBrush(QColor("#090D12"))
+            p.drawRoundedRect(sh_rect, 8, 8)
+            p.setPen(QColor("#94A3B8"))
+            p.setFont(QFont("JetBrains Mono", 7.5, QFont.Bold))
+            mode_lbl = {"paddles": "LEVAS", "sequential": "SEQ", "h_shifter": "H-GATE"}.get(smode, "CAJA")
+            p.drawText(QRectF(528, 114, 64, 18), Qt.AlignCenter, mode_lbl)
+            gear_txt = self._state.shifter_gear or (
+                "▼" if self._state.buttons.get("LB") else ("▲" if self._state.buttons.get("RB") else "N")
+            )
+            p.setPen(QColor("#34D399") if (shift_on or self._state.shifter_gear) else QColor("#E2E8F0"))
+            p.setFont(QFont("JetBrains Mono", 18, QFont.Bold))
+            p.drawText(QRectF(534, 152, 52, 68), Qt.AlignCenter, gear_txt)
+            p.setPen(QColor("#64748B"))
+            p.setFont(QFont("JetBrains Mono", 7.5, QFont.Bold))
+            p.drawText(
+                QRectF(534, 230, 52, 26),
+                Qt.AlignCenter,
+                f"{self._config.wheel_shifter_down_btn}/{self._config.wheel_shifter_up_btn}",
+            )
+
+        # Optional Clutch mini gauge when clutch enabled or active
+        if self._config.wheel_clutch_mode != "none" or self._state.clutch > 10:
+            cl_rect = QRectF(52, 404, 96, 42)
+            cfrac = max(0.0, min(1.0, float(self._state.clutch) / float(TRIGGER_MAX)))
+            p.setPen(QPen(QColor("#1E2630"), 1.3))
+            p.setBrush(QColor("#07090C"))
+            p.drawRoundedRect(cl_rect, 7, 7)
+            if cfrac > 0.01:
+                fh = cl_rect.height() * cfrac
+                p.setPen(Qt.NoPen)
+                p.setBrush(QColor("#38BDF8"))
+                p.drawRoundedRect(QRectF(cl_rect.left() + 2, cl_rect.bottom() - fh + 2, cl_rect.width() - 4, max(4.0, fh - 4)), 5, 5)
+            p.setPen(QColor("#F8FAFC") if cfrac > 0.25 else QColor("#94A3B8"))
+            p.setFont(QFont("JetBrains Mono", 8.5, QFont.Bold))
+            p.drawText(cl_rect, Qt.AlignCenter, f"Embr {round(cfrac * 100)}%")
 
     def _draw_shell(self, p: QPainter, spec: _ControllerLayoutSpec) -> None:
         if spec.family == "wheel":

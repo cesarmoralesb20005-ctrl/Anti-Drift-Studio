@@ -46,6 +46,18 @@
 #ifndef BTN_GEAR_UP
 #define BTN_GEAR_UP 0x151
 #endif
+#ifndef BTN_TRIGGER_HAPPY1
+#define BTN_TRIGGER_HAPPY1 0x2c0
+#endif
+#ifndef BTN_TRIGGER_HAPPY20
+#define BTN_TRIGGER_HAPPY20 0x2d3
+#endif
+#ifndef KEY_A
+#define KEY_A 30
+#endif
+#ifndef KEY_ENTER
+#define KEY_ENTER 28
+#endif
 
 static volatile sig_atomic_t running = 1;
 static volatile sig_atomic_t reload_cfg = 0;
@@ -144,6 +156,19 @@ typedef struct {
     int wheel_invert_gas;
     int wheel_invert_brake;
     int wheel_combined_pedals;
+    double lt_dz, rt_dz;
+    double lt_max, rt_max;
+    double lt_curve, rt_curve;
+    int wheel_shifter_mode;         /* 0=none, 1=paddles, 2=sequential, 3=h_shifter */
+    char wheel_shifter_device[MAX_PATH_LEN];
+    int wheel_shifter_down_code;
+    int wheel_shifter_up_code;
+    int wheel_handbrake_enabled;
+    char wheel_handbrake_device[MAX_PATH_LEN];
+    int wheel_handbrake_target_code;
+    double wheel_handbrake_dz;
+    int wheel_handbrake_invert;
+    int wheel_clutch_mode;          /* 0=none, 1=x_btn, 2=lb_btn */
     char device_path[MAX_PATH_LEN];
     char virtual_name[UINPUT_MAX_NAME_SIZE];
 } Config;
@@ -155,6 +180,10 @@ static void init_default_config(Config *cfg) {
     cfg->response_curve = 1.0;
     cfg->rumble_gain = 100;
     cfg->multi_controller = 1;
+    cfg->lt_max = 1.00;
+    cfg->rt_max = 1.00;
+    cfg->lt_curve = 1.00;
+    cfg->rt_curve = 1.00;
     cfg->wheel_mode = 0;
     cfg->wheel_rotation_deg = 270;
     cfg->wheel_steer_dz = 0.02;
@@ -164,6 +193,15 @@ static void init_default_config(Config *cfg) {
     cfg->wheel_dz_brake = 0.04;
     cfg->wheel_max_gas = 1.00;
     cfg->wheel_max_brake = 1.00;
+    cfg->wheel_shifter_mode = 1;
+    snprintf(cfg->wheel_shifter_device, sizeof(cfg->wheel_shifter_device), "auto");
+    cfg->wheel_shifter_down_code = 310;
+    cfg->wheel_shifter_up_code = 311;
+    cfg->wheel_handbrake_enabled = 1;
+    snprintf(cfg->wheel_handbrake_device, sizeof(cfg->wheel_handbrake_device), "auto");
+    cfg->wheel_handbrake_target_code = 304;
+    cfg->wheel_handbrake_dz = 0.20;
+    cfg->wheel_clutch_mode = 0;
     snprintf(cfg->device_path, sizeof(cfg->device_path), "auto");
     snprintf(cfg->virtual_name, sizeof(cfg->virtual_name), "%s", DEFAULT_VIRTUAL_NAME);
 }
@@ -226,6 +264,44 @@ static void apply_kv_to_config(Config *cfg, const char *key, const char *raw_val
     else if (strcmp(key, "wheel_invert_gas") == 0) cfg->wheel_invert_gas = ((int)val != 0);
     else if (strcmp(key, "wheel_invert_brake") == 0) cfg->wheel_invert_brake = ((int)val != 0);
     else if (strcmp(key, "wheel_combined_pedals") == 0) cfg->wheel_combined_pedals = ((int)val != 0);
+    else if (strcmp(key, "lt_dz") == 0) cfg->lt_dz = fmax(0.0, fmin(0.40, val));
+    else if (strcmp(key, "rt_dz") == 0) cfg->rt_dz = fmax(0.0, fmin(0.40, val));
+    else if (strcmp(key, "lt_max") == 0) cfg->lt_max = fmax(0.10, fmin(1.00, val));
+    else if (strcmp(key, "rt_max") == 0) cfg->rt_max = fmax(0.10, fmin(1.00, val));
+    else if (strcmp(key, "lt_curve") == 0) cfg->lt_curve = fmax(0.40, fmin(2.50, val));
+    else if (strcmp(key, "rt_curve") == 0) cfg->rt_curve = fmax(0.40, fmin(2.50, val));
+    else if (strcmp(key, "wheel_shifter_mode") == 0) {
+        if (strcmp(strval, "none") == 0) cfg->wheel_shifter_mode = 0;
+        else if (strcmp(strval, "paddles") == 0) cfg->wheel_shifter_mode = 1;
+        else if (strcmp(strval, "sequential") == 0) cfg->wheel_shifter_mode = 2;
+        else if (strcmp(strval, "h_shifter") == 0) cfg->wheel_shifter_mode = 3;
+    }
+    else if (strcmp(key, "wheel_shifter_device") == 0) {
+        snprintf(cfg->wheel_shifter_device, sizeof(cfg->wheel_shifter_device), "%s", strval[0] ? strval : "auto");
+    }
+    else if (strcmp(key, "wheel_shifter_down_btn") == 0) {
+        int b = parse_btn_name(strval);
+        if (b >= 0) cfg->wheel_shifter_down_code = b;
+    }
+    else if (strcmp(key, "wheel_shifter_up_btn") == 0) {
+        int b = parse_btn_name(strval);
+        if (b >= 0) cfg->wheel_shifter_up_code = b;
+    }
+    else if (strcmp(key, "wheel_handbrake_enabled") == 0) cfg->wheel_handbrake_enabled = ((int)val != 0);
+    else if (strcmp(key, "wheel_handbrake_device") == 0) {
+        snprintf(cfg->wheel_handbrake_device, sizeof(cfg->wheel_handbrake_device), "%s", strval[0] ? strval : "auto");
+    }
+    else if (strcmp(key, "wheel_handbrake_target") == 0) {
+        int b = parse_btn_name(strval);
+        if (b >= 0) cfg->wheel_handbrake_target_code = b;
+    }
+    else if (strcmp(key, "wheel_handbrake_dz") == 0) cfg->wheel_handbrake_dz = fmax(0.05, fmin(0.85, val));
+    else if (strcmp(key, "wheel_handbrake_invert") == 0) cfg->wheel_handbrake_invert = ((int)val != 0);
+    else if (strcmp(key, "wheel_clutch_mode") == 0) {
+        if (strcmp(strval, "x_btn") == 0) cfg->wheel_clutch_mode = 1;
+        else if (strcmp(strval, "lb_btn") == 0) cfg->wheel_clutch_mode = 2;
+        else cfg->wheel_clutch_mode = 0;
+    }
     else if (strcmp(key, "device_path") == 0) {
         if (strval[0]) snprintf(cfg->device_path, sizeof(cfg->device_path), "%s", strval);
         else snprintf(cfg->device_path, sizeof(cfg->device_path), "auto");
@@ -597,6 +673,30 @@ static int apply_hair_trigger(int val, int hair_trigger) {
     return (val >= 100) ? 1023 : 0;
 }
 
+static int compute_trigger_output(
+    int raw_val, double dz, double max_out, double curve, int hair_trigger) {
+    int clamped_raw = raw_val;
+    if (clamped_raw < 0) clamped_raw = 0;
+    if (clamped_raw > 1023) clamped_raw = 1023;
+    double cap = fmax(0.10, fmin(1.0, max_out));
+    if (hair_trigger) {
+        return (clamped_raw >= 100) ? (int)llround(cap * 1023.0) : 0;
+    }
+    double dz_c = fmax(0.0, fmin(0.95, dz));
+    double frac = (double)clamped_raw / 1023.0;
+    if (frac <= dz_c) return 0;
+    double scaled = (frac - dz_c) / (1.0 - dz_c);
+    if (scaled > 1.0) scaled = 1.0;
+    if (curve != 1.0 && scaled > 0.0) {
+        scaled = pow(scaled, curve);
+        if (scaled > 1.0) scaled = 1.0;
+    }
+    int out = (int)llround(scaled * cap * 1023.0);
+    if (out < 0) out = 0;
+    if (out > 1023) out = 1023;
+    return out;
+}
+
 static int compute_wheel_steering(
     int raw_x, int center_x, double dz, double saturation, double linearity) {
     double nx = normalize_axis(raw_x, center_x);
@@ -829,6 +929,8 @@ typedef struct {
     int dig_lt_code, dig_rt_code;
     int is_wheel;
     int combo_pedal_code;
+    int clutch_code;
+    int handbrake_code;
     int use_generic_joy_btns;
     int use_dpad_btns;
     int wheel_use_gear_shifters;
@@ -841,6 +943,8 @@ typedef struct {
     int lt_min, lt_max;
     int rt_min, rt_max;
     int combo_min, combo_max;
+    int clutch_min, clutch_max;
+    int handbrake_min, handbrake_max;
 } HardwareMap;
 
 static void query_abs_bounds(int fd, int code, int def_min, int def_max, int *out_min, int *out_max) {
@@ -866,6 +970,8 @@ static HardwareMap probe_hardware_map(int src_fd, int src_is_rw) {
     hm.dig_lt_code = -1;
     hm.dig_rt_code = -1;
     hm.combo_pedal_code = -1;
+    hm.clutch_code = -1;
+    hm.handbrake_code = -1;
 
     unsigned char key_bits[96] = {0};
     unsigned char abs_bits[8] = {0};
@@ -917,6 +1023,14 @@ static HardwareMap probe_hardware_map(int src_fd, int src_is_rw) {
         } else if (hm.lt_code >= 0 && hm.rt_code < 0) {
             hm.combo_pedal_code = hm.lt_code;
         }
+
+        if (bit_is_set(abs_bits, ABS_RUDDER)) hm.handbrake_code = ABS_RUDDER;
+        if (has_throttle && hm.rt_code != ABS_THROTTLE && hm.lt_code != ABS_THROTTLE) {
+            hm.clutch_code = ABS_THROTTLE;
+        } else if (has_y && hm.lt_code >= 0 && hm.rt_code >= 0 &&
+                   hm.lt_code != ABS_Y && hm.rt_code != ABS_Y && !has_rxry) {
+            hm.clutch_code = ABS_Y;
+        }
     } else {
         if (!has_x || !has_y) {
             hm.lx_code = -1;
@@ -954,6 +1068,8 @@ static HardwareMap probe_hardware_map(int src_fd, int src_is_rw) {
     query_abs_bounds(src_fd, hm.lt_code, 0, 1023, &hm.lt_min, &hm.lt_max);
     query_abs_bounds(src_fd, hm.rt_code, 0, 1023, &hm.rt_min, &hm.rt_max);
     query_abs_bounds(src_fd, hm.combo_pedal_code, -32768, 32767, &hm.combo_min, &hm.combo_max);
+    query_abs_bounds(src_fd, hm.clutch_code, 0, 1023, &hm.clutch_min, &hm.clutch_max);
+    query_abs_bounds(src_fd, hm.handbrake_code, 0, 1023, &hm.handbrake_min, &hm.handbrake_max);
 
     return hm;
 }
@@ -1050,9 +1166,20 @@ static int setup_uinput(int low_latency, int enable_ff, const char *virtual_name
 
 typedef struct {
     int phys_btn[NUM_STD_KEYS];
+    int aux_btn[NUM_STD_KEYS];
+    int virt_btn[NUM_STD_KEYS];
     int64_t btn_last_ms[NUM_STD_KEYS];
     int phys_lt, phys_rt;
     int raw_combo_pedal;
+    int raw_handbrake;
+    int hb_active;
+    int raw_clutch;
+    int clutch_active;
+    int cur_h_gear;
+    int shift_queue;      /* >0 = pending upshifts, <0 = pending downshifts */
+    int shift_phase;      /* 0=idle, 1=holding key, 2=release gap */
+    int shift_held_code;
+    int64_t shift_next_ms;
     int phys_hx, phys_hy;
     int dpad_u, dpad_d, dpad_l, dpad_r;
     int raw_lx, raw_ly, raw_rx, raw_ry;
@@ -1069,6 +1196,15 @@ typedef struct {
     int src_fd;
     int src_is_rw;
     int ufd;
+    int aux_shifter_fd;
+    char aux_shifter_path[MAX_PATH_LEN];
+    int aux_shifter_grabbed;
+    int aux_gear_codes[10];
+    int aux_gear_count;
+    int aux_hb_fd;
+    char aux_hb_path[MAX_PATH_LEN];
+    int aux_hb_axis;
+    int aux_hb_min, aux_hb_max;
     int dirty_l;
     int dirty_r;
     Config cfg;
@@ -1161,6 +1297,51 @@ static int wheel_combined_active(const PadInstance *pad) {
     return (pad->hm.combo_pedal_code >= 0 && pad->hm.lt_code < 0 && pad->hm.rt_code < 0);
 }
 
+static void sync_std_button(PadInstance *pad, int code) {
+    int idx = std_key_index(code);
+    if (idx < 0 || pad->ufd < 0) return;
+    int want = (pad->rt.phys_btn[idx] || pad->rt.aux_btn[idx]) ? 1 : 0;
+    if (want != pad->rt.virt_btn[idx]) {
+        pad->rt.virt_btn[idx] = want;
+        emit_ev(pad, EV_KEY, (uint16_t)code, want);
+    }
+}
+
+static void refresh_wheel_virtual_buttons(PadInstance *pad) {
+    PadRuntime *rt = &pad->rt;
+    const Config *cfg = &pad->cfg;
+    int next_aux[NUM_STD_KEYS];
+    memset(next_aux, 0, sizeof(next_aux));
+
+    if (pad_is_wheel_active(pad)) {
+        if (cfg->wheel_handbrake_enabled && rt->hb_active) {
+            int idx = std_key_index(cfg->wheel_handbrake_target_code);
+            if (idx >= 0) next_aux[idx] = 1;
+        }
+        if (cfg->wheel_clutch_mode == 1 && rt->clutch_active) {
+            int idx = std_key_index(307); /* X */
+            if (idx >= 0) next_aux[idx] = 1;
+        } else if (cfg->wheel_clutch_mode == 2 && rt->clutch_active) {
+            int idx = std_key_index(310); /* LB */
+            if (idx >= 0) next_aux[idx] = 1;
+        }
+        if (rt->shift_phase == 1 && rt->shift_held_code > 0) {
+            int idx = std_key_index(rt->shift_held_code);
+            if (idx >= 0) next_aux[idx] = 1;
+        }
+    }
+
+    int changed = 0;
+    for (int i = 0; i < NUM_STD_KEYS; i++) {
+        if (next_aux[i] != rt->aux_btn[i]) {
+            rt->aux_btn[i] = next_aux[i];
+            sync_std_button(pad, STD_KEYS[i]);
+            changed = 1;
+        }
+    }
+    if (changed) emit_ev(pad, EV_SYN, SYN_REPORT, 0);
+}
+
 static void emit_pedals(PadInstance *pad) {
     const Config *cfg = &pad->cfg;
     const PadRuntime *rt = &pad->rt;
@@ -1179,8 +1360,12 @@ static void emit_pedals(PadInstance *pad) {
         emit_ev(pad, EV_ABS, ABS_Z, out_lt);
         emit_ev(pad, EV_ABS, ABS_RZ, out_rt);
     } else {
-        emit_ev(pad, EV_ABS, ABS_Z, apply_hair_trigger(rt->phys_lt, cfg->hair_trigger));
-        emit_ev(pad, EV_ABS, ABS_RZ, apply_hair_trigger(rt->phys_rt, cfg->hair_trigger));
+        emit_ev(
+            pad, EV_ABS, ABS_Z,
+            compute_trigger_output(rt->phys_lt, cfg->lt_dz, cfg->lt_max, cfg->lt_curve, cfg->hair_trigger));
+        emit_ev(
+            pad, EV_ABS, ABS_RZ,
+            compute_trigger_output(rt->phys_rt, cfg->rt_dz, cfg->rt_max, cfg->rt_curve, cfg->hair_trigger));
     }
 }
 
@@ -1413,8 +1598,223 @@ static int pad_already_attached(const PadInstance *pads, const char *dev_path) {
     return 0;
 }
 
+static void close_wheel_aux(PadInstance *pad) {
+    if (pad->aux_shifter_fd >= 0) {
+        if (pad->aux_shifter_grabbed) ioctl(pad->aux_shifter_fd, EVIOCGRAB, (void *)0);
+        close(pad->aux_shifter_fd);
+        pad->aux_shifter_fd = -1;
+        pad->aux_shifter_grabbed = 0;
+        pad->aux_shifter_path[0] = '\0';
+        pad->aux_gear_count = 0;
+    }
+    if (pad->aux_hb_fd >= 0) {
+        ioctl(pad->aux_hb_fd, EVIOCGRAB, (void *)0);
+        close(pad->aux_hb_fd);
+        pad->aux_hb_fd = -1;
+        pad->aux_hb_axis = -1;
+        pad->aux_hb_path[0] = '\0';
+    }
+    pad->rt.hb_active = 0;
+    pad->rt.clutch_active = 0;
+    pad->rt.shift_queue = 0;
+    pad->rt.shift_phase = 0;
+    pad->rt.shift_held_code = 0;
+    refresh_wheel_virtual_buttons(pad);
+}
+
+static int find_aux_sim_device(
+    const char *main_dev_path, const char *pref_path, int want_type,
+    char *out_path, size_t out_sz) {
+    out_path[0] = '\0';
+    if (strcmp(pref_path, "none") == 0 || strcmp(pref_path, "same") == 0) return 0;
+
+    if (pref_path[0] && strcmp(pref_path, "auto") != 0 && strcmp(pref_path, main_dev_path) != 0) {
+        snprintf(out_path, out_sz, "%s", pref_path);
+        return 1;
+    }
+
+    DIR *dir = opendir("/sys/class/input");
+    if (!dir) return 0;
+
+    int best_score = 0;
+    struct dirent *ent;
+    while ((ent = readdir(dir)) != NULL) {
+        if (strncmp(ent->d_name, "event", 5) != 0 || strlen(ent->d_name) >= 48) continue;
+        if (is_virtual_event(ent->d_name)) continue;
+
+        char dev_node[MAX_PATH_LEN];
+        snprintf(dev_node, sizeof(dev_node), "/dev/input/%.48s", ent->d_name);
+        if (strcmp(dev_node, main_dev_path) == 0) continue;
+
+        char name_path[300], dev_name[160] = {0};
+        snprintf(name_path, sizeof(name_path), "/sys/class/input/%s/device/name", ent->d_name);
+        read_sys_line(name_path, dev_name, sizeof(dev_name));
+        if (!dev_name[0] || strstr(dev_name, "Mouse") || strstr(dev_name, "Touchpad") ||
+            strstr(dev_name, "Keyboard") || strstr(dev_name, "Motion") ||
+            strstr(dev_name, "Power Button") || strstr(dev_name, "Video Bus")) {
+            continue;
+        }
+
+        int fd = open(dev_node, O_RDONLY | O_NONBLOCK);
+        if (fd < 0) continue;
+        unsigned char key_bits[96] = {0};
+        unsigned char abs_bits[8] = {0};
+        int ok_io = (ioctl(fd, EVIOCGBIT(EV_KEY, sizeof(key_bits)), key_bits) >= 0 &&
+                     ioctl(fd, EVIOCGBIT(EV_ABS, sizeof(abs_bits)), abs_bits) >= 0);
+        close(fd);
+        if (!ok_io) continue;
+        if (bit_is_set(key_bits, BTN_LEFT) ||
+            (bit_is_set(key_bits, KEY_A) && bit_is_set(key_bits, KEY_ENTER))) {
+            continue;
+        }
+
+        int abs_cnt = 0;
+        for (int a = 0; a <= ABS_MISC; a++) {
+            if (bit_is_set(abs_bits, a)) abs_cnt++;
+        }
+        int joy_btn_cnt = 0;
+        for (int b = BTN_TRIGGER; b <= BTN_GEAR_UP; b++) {
+            if (bit_is_set(key_bits, b)) joy_btn_cnt++;
+        }
+        for (int b = BTN_TRIGGER_HAPPY1; b <= BTN_TRIGGER_HAPPY20; b++) {
+            if (bit_is_set(key_bits, b)) joy_btn_cnt++;
+        }
+
+        int sc = 0;
+        if (want_type == 1) {
+            int hb_name = (strcasestr(dev_name, "handbrake") != NULL ||
+                           strcasestr(dev_name, "freno") != NULL ||
+                           strcasestr(dev_name, "tss") != NULL ||
+                           strcasestr(dev_name, "heusinkveld") != NULL);
+            int sim_mcu = (strcasestr(dev_name, "arduino") != NULL ||
+                           strcasestr(dev_name, "leonardo") != NULL ||
+                           strcasestr(dev_name, "pro micro") != NULL ||
+                           strcasestr(dev_name, "stm32") != NULL ||
+                           strcasestr(dev_name, "esp32") != NULL ||
+                           strcasestr(dev_name, "sim") != NULL);
+            if (abs_cnt >= 1 && abs_cnt <= 3 && joy_btn_cnt <= 4 && (hb_name || sim_mcu)) {
+                sc = hb_name ? 100 : 40;
+            }
+        } else if (want_type == 2) {
+            int sh_name = (strcasestr(dev_name, "shifter") != NULL ||
+                           strcasestr(dev_name, "palanca") != NULL ||
+                           strcasestr(dev_name, "cambio") != NULL ||
+                           strcasestr(dev_name, "th8") != NULL ||
+                           strcasestr(dev_name, "shh") != NULL ||
+                           strcasestr(dev_name, "gear") != NULL);
+            int has_sticks = bit_is_set(abs_bits, ABS_X) && bit_is_set(abs_bits, ABS_Y) &&
+                             bit_is_set(abs_bits, ABS_RX) && bit_is_set(abs_bits, ABS_RY);
+            if (!has_sticks && joy_btn_cnt >= 2 && (sh_name || (abs_cnt == 0 && joy_btn_cnt <= 20))) {
+                sc = sh_name ? 100 : 35;
+            }
+        }
+        if (sc > best_score) {
+            best_score = sc;
+            snprintf(out_path, out_sz, "%s", dev_node);
+        }
+    }
+    closedir(dir);
+    return best_score > 0;
+}
+
+static void open_wheel_aux(PadInstance *pad) {
+    close_wheel_aux(pad);
+    if (!pad_is_wheel_active(pad)) return;
+
+    const Config *cfg = &pad->cfg;
+    if (cfg->wheel_shifter_mode == 2 || cfg->wheel_shifter_mode == 3) {
+        char sh_path[MAX_PATH_LEN] = {0};
+        if (find_aux_sim_device(pad->dev_path, cfg->wheel_shifter_device, 2, sh_path, sizeof(sh_path))) {
+            int fd = open(sh_path, O_RDONLY | O_NONBLOCK);
+            if (fd >= 0) {
+                if (ioctl(fd, EVIOCGRAB, (void *)1) == 0) {
+                    pad->aux_shifter_fd = fd;
+                    pad->aux_shifter_grabbed = 1;
+                    snprintf(pad->aux_shifter_path, sizeof(pad->aux_shifter_path), "%s", sh_path);
+
+                    unsigned char kbits[96] = {0};
+                    ioctl(fd, EVIOCGBIT(EV_KEY, sizeof(kbits)), kbits);
+                    pad->aux_gear_count = 0;
+                    for (int b = BTN_TRIGGER; b <= BTN_GEAR_UP && pad->aux_gear_count < 10; b++) {
+                        if (bit_is_set(kbits, b)) pad->aux_gear_codes[pad->aux_gear_count++] = b;
+                    }
+                    for (int b = BTN_TRIGGER_HAPPY1; b <= BTN_TRIGGER_HAPPY20 && pad->aux_gear_count < 10; b++) {
+                        if (bit_is_set(kbits, b)) pad->aux_gear_codes[pad->aux_gear_count++] = b;
+                    }
+                } else {
+                    close(fd);
+                }
+            }
+        }
+    }
+
+    if (cfg->wheel_handbrake_enabled &&
+        strcmp(cfg->wheel_handbrake_device, "none") != 0) {
+        char hb_path[MAX_PATH_LEN] = {0};
+        if (find_aux_sim_device(pad->dev_path, cfg->wheel_handbrake_device, 1, hb_path, sizeof(hb_path))) {
+            int fd = open(hb_path, O_RDONLY | O_NONBLOCK);
+            if (fd >= 0) {
+                if (ioctl(fd, EVIOCGRAB, (void *)1) == 0) {
+                    pad->aux_hb_fd = fd;
+                    snprintf(pad->aux_hb_path, sizeof(pad->aux_hb_path), "%s", hb_path);
+                    unsigned char abits[8] = {0};
+                    ioctl(fd, EVIOCGBIT(EV_ABS, sizeof(abits)), abits);
+                    static const int hb_prefs[] = {ABS_X, ABS_Z, ABS_RZ, ABS_THROTTLE, ABS_RUDDER, ABS_BRAKE, ABS_RX, ABS_RY, ABS_Y};
+                    pad->aux_hb_axis = -1;
+                    for (size_t i = 0; i < sizeof(hb_prefs) / sizeof(hb_prefs[0]); i++) {
+                        if (bit_is_set(abits, hb_prefs[i])) {
+                            pad->aux_hb_axis = hb_prefs[i];
+                            break;
+                        }
+                    }
+                    query_abs_bounds(fd, pad->aux_hb_axis, 0, 1023, &pad->aux_hb_min, &pad->aux_hb_max);
+                } else {
+                    close(fd);
+                }
+            }
+        }
+    }
+}
+
+static int step_wheel_aux(PadInstance *pad) {
+    PadRuntime *rt = &pad->rt;
+    if (!pad_is_wheel_active(pad)) return 450;
+    if (rt->shift_phase == 0 && rt->shift_queue == 0) return 450;
+
+    int64_t now = monotonic_ms();
+    if (rt->shift_phase == 0 && rt->shift_queue != 0) {
+        if (rt->shift_queue > 0) {
+            rt->shift_held_code = pad->cfg.wheel_shifter_up_code;
+            rt->shift_queue--;
+        } else {
+            rt->shift_held_code = pad->cfg.wheel_shifter_down_code;
+            rt->shift_queue++;
+        }
+        rt->shift_phase = 1;
+        rt->shift_next_ms = now + 48;
+        refresh_wheel_virtual_buttons(pad);
+        return 48;
+    }
+
+    int64_t rem = rt->shift_next_ms - now;
+    if (rem > 0) return (int)rem;
+
+    if (rt->shift_phase == 1) {
+        rt->shift_phase = 2;
+        rt->shift_held_code = 0;
+        rt->shift_next_ms = now + 35;
+        refresh_wheel_virtual_buttons(pad);
+        return 35;
+    }
+
+    rt->shift_phase = 0;
+    if (rt->shift_queue != 0) return step_wheel_aux(pad);
+    return 450;
+}
+
 static void detach_pad(PadInstance *pad) {
     if (!pad->active) return;
+    close_wheel_aux(pad);
     if (pad->ufd >= 0) {
         release_all_macros(pad);
         flush_ev(pad);
@@ -1475,6 +1875,9 @@ static int attach_pad(PadInstance *pads, const char *ev_name, const char *dev_pa
     pad->src_fd = src_fd;
     pad->src_is_rw = src_is_rw;
     pad->ufd = ufd;
+    pad->aux_shifter_fd = -1;
+    pad->aux_hb_fd = -1;
+    pad->aux_hb_axis = -1;
     pad->cfg = pad_cfg;
     pad->hm = hm;
     pad->macros = load_macros();
@@ -1484,6 +1887,7 @@ static int attach_pad(PadInstance *pads, const char *ev_name, const char *dev_pa
     pad->rt.raw_rx = pad_cfg.center_rx;
     pad->rt.raw_ry = pad_cfg.center_ry;
 
+    open_wheel_aux(pad);
     sync_initial_pad_state(pad);
     return 0;
 }
@@ -1573,6 +1977,8 @@ static void reload_all_pads(PadInstance *pads, Config *global_cfg) {
 
         emit_corrected_sticks(pad, 2);
         emit_pedals(pad);
+        open_wheel_aux(pad);
+        refresh_wheel_virtual_buttons(pad);
         emit_ev(pad, EV_SYN, SYN_REPORT, 0);
     }
 
@@ -1630,6 +2036,24 @@ static int process_pad_events(PadInstance *pad) {
                 } else if (ev.code == hm->rt_code) {
                     rt->phys_rt = scale_trig_to_1023(ev.value, hm->rt_min, hm->rt_max);
                     if (!wheel_combined_active(pad)) emit_pedals(pad);
+                } else if (hm->handbrake_code >= 0 && ev.code == hm->handbrake_code) {
+                    int hb = scale_trig_to_1023(ev.value, hm->handbrake_min, hm->handbrake_max);
+                    if (cfg->wheel_handbrake_invert) hb = 1023 - hb;
+                    rt->raw_handbrake = hb;
+                    double frac = (double)hb / 1023.0;
+                    int next_hb = rt->hb_active ? (frac >= cfg->wheel_handbrake_dz - 0.03) : (frac >= cfg->wheel_handbrake_dz);
+                    if (next_hb != rt->hb_active) {
+                        rt->hb_active = next_hb;
+                        refresh_wheel_virtual_buttons(pad);
+                    }
+                } else if (hm->clutch_code >= 0 && ev.code == hm->clutch_code) {
+                    int cl = scale_trig_to_1023(ev.value, hm->clutch_min, hm->clutch_max);
+                    rt->raw_clutch = cl;
+                    int next_cl = (cl >= 260);
+                    if (next_cl != rt->clutch_active) {
+                        rt->clutch_active = next_cl;
+                        refresh_wheel_virtual_buttons(pad);
+                    }
                 } else if (ev.code == ABS_HAT0X) {
                     rt->phys_hx = (ev.value < 0) ? -1 : ((ev.value > 0) ? 1 : 0);
                     emit_ev(pad, EV_ABS, ABS_HAT0X, rt->phys_hx);
@@ -1713,9 +2137,11 @@ static int process_pad_events(PadInstance *pad) {
 
                 int target_code = ev.code;
                 if (ev.code == BTN_GEAR_DOWN) {
-                    target_code = 310;
+                    target_code = (pad_is_wheel_active(pad) && cfg->wheel_shifter_mode != 0)
+                        ? cfg->wheel_shifter_down_code : 310;
                 } else if (ev.code == BTN_GEAR_UP) {
-                    target_code = 311;
+                    target_code = (pad_is_wheel_active(pad) && cfg->wheel_shifter_mode != 0)
+                        ? cfg->wheel_shifter_up_code : 311;
                 } else if (hm->use_generic_joy_btns) {
                     target_code = translate_generic_button(ev.code);
                 }
@@ -1731,12 +2157,101 @@ static int process_pad_events(PadInstance *pad) {
                         rt->btn_last_ms[idx] = ev_now_ms;
                     }
                     rt->phys_btn[idx] = state_val;
-                    emit_ev(pad, EV_KEY, (uint16_t)target_code, ev.value);
+                    sync_std_button(pad, target_code);
                 }
             }
         }
     }
     return io_err ? -1 : 0;
+}
+
+static int process_aux_handbrake_events(PadInstance *pad) {
+    struct input_event ev_buf[32];
+    const Config *cfg = &pad->cfg;
+    PadRuntime *rt = &pad->rt;
+    while (running && pad->aux_hb_fd >= 0) {
+        ssize_t n = read(pad->aux_hb_fd, ev_buf, sizeof(ev_buf));
+        if (n < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+            if (errno == EINTR) continue;
+            return -1;
+        }
+        if (n == 0) return -1;
+        int count = (int)(n / (ssize_t)sizeof(struct input_event));
+        for (int i = 0; i < count; i++) {
+            struct input_event ev = ev_buf[i];
+            if (ev.type == EV_ABS && ev.code == pad->aux_hb_axis) {
+                int hb = scale_trig_to_1023(ev.value, pad->aux_hb_min, pad->aux_hb_max);
+                if (cfg->wheel_handbrake_invert) hb = 1023 - hb;
+                rt->raw_handbrake = hb;
+                double frac = (double)hb / 1023.0;
+                int next_hb = rt->hb_active ? (frac >= cfg->wheel_handbrake_dz - 0.03) : (frac >= cfg->wheel_handbrake_dz);
+                if (next_hb != rt->hb_active) {
+                    rt->hb_active = next_hb;
+                    refresh_wheel_virtual_buttons(pad);
+                }
+            } else if (ev.type == EV_KEY) {
+                int next_hb = ev.value ? 1 : 0;
+                if (next_hb != rt->hb_active) {
+                    rt->hb_active = next_hb;
+                    refresh_wheel_virtual_buttons(pad);
+                }
+            }
+        }
+    }
+    return 0;
+}
+
+static int process_aux_shifter_events(PadInstance *pad) {
+    struct input_event ev_buf[32];
+    const Config *cfg = &pad->cfg;
+    PadRuntime *rt = &pad->rt;
+    while (running && pad->aux_shifter_fd >= 0) {
+        ssize_t n = read(pad->aux_shifter_fd, ev_buf, sizeof(ev_buf));
+        if (n < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+            if (errno == EINTR) continue;
+            return -1;
+        }
+        if (n == 0) return -1;
+        int count = (int)(n / (ssize_t)sizeof(struct input_event));
+        for (int i = 0; i < count; i++) {
+            struct input_event ev = ev_buf[i];
+            if (ev.type != EV_KEY || ev.value == 2) continue;
+
+            if (cfg->wheel_shifter_mode == 2) {
+                int idx_code = -1;
+                if (ev.code == BTN_GEAR_DOWN || (pad->aux_gear_count >= 2 && ev.code == pad->aux_gear_codes[0])) {
+                    idx_code = cfg->wheel_shifter_down_code;
+                } else if (ev.code == BTN_GEAR_UP || (pad->aux_gear_count >= 2 && ev.code == pad->aux_gear_codes[1])) {
+                    idx_code = cfg->wheel_shifter_up_code;
+                }
+                int idx = std_key_index(idx_code);
+                if (idx >= 0) {
+                    rt->aux_btn[idx] = ev.value ? 1 : 0;
+                    sync_std_button(pad, idx_code);
+                    emit_ev(pad, EV_SYN, SYN_REPORT, 0);
+                }
+            } else if (cfg->wheel_shifter_mode == 3 && ev.value == 1) {
+                int new_gear = -1;
+                for (int g = 0; g < pad->aux_gear_count; g++) {
+                    if (pad->aux_gear_codes[g] == ev.code) {
+                        new_gear = g + 1;
+                        break;
+                    }
+                }
+                if (new_gear > 0 && new_gear != rt->cur_h_gear) {
+                    if (rt->cur_h_gear > 0) {
+                        rt->shift_queue += (new_gear - rt->cur_h_gear);
+                    } else {
+                        rt->shift_queue += 1;
+                    }
+                    rt->cur_h_gear = new_gear;
+                }
+            }
+        }
+    }
+    return 0;
 }
 
 int main(void) {
@@ -1749,6 +2264,9 @@ int main(void) {
     for (int i = 0; i < MAX_PADS; i++) {
         pads[i].src_fd = -1;
         pads[i].ufd = -1;
+        pads[i].aux_shifter_fd = -1;
+        pads[i].aux_hb_fd = -1;
+        pads[i].aux_hb_axis = -1;
     }
 
     Config global_cfg = load_global_config();
@@ -1769,9 +2287,9 @@ int main(void) {
             scan_and_sync_pads(pads, &global_cfg);
         }
 
-        struct pollfd pfds[MAX_PADS * 2];
-        int pfd_pad[MAX_PADS * 2];
-        int pfd_is_uinput[MAX_PADS * 2];
+        struct pollfd pfds[MAX_PADS * 4];
+        int pfd_pad[MAX_PADS * 4];
+        int pfd_kind[MAX_PADS * 4]; /* 0=src, 1=ufd, 2=aux_shifter, 3=aux_hb */
         nfds_t nfds = 0;
         int min_wait = 450;
 
@@ -1779,12 +2297,14 @@ int main(void) {
             if (!pads[i].active) continue;
             int mw = step_macros(&pads[i]);
             if (mw < min_wait) min_wait = mw;
+            int aw = step_wheel_aux(&pads[i]);
+            if (aw < min_wait) min_wait = aw;
 
             pfds[nfds].fd = pads[i].src_fd;
             pfds[nfds].events = POLLIN;
             pfds[nfds].revents = 0;
             pfd_pad[nfds] = i;
-            pfd_is_uinput[nfds] = 0;
+            pfd_kind[nfds] = 0;
             nfds++;
 
             if (pads[i].hm.has_ff_rumble) {
@@ -1792,7 +2312,23 @@ int main(void) {
                 pfds[nfds].events = POLLIN;
                 pfds[nfds].revents = 0;
                 pfd_pad[nfds] = i;
-                pfd_is_uinput[nfds] = 1;
+                pfd_kind[nfds] = 1;
+                nfds++;
+            }
+            if (pads[i].aux_shifter_fd >= 0) {
+                pfds[nfds].fd = pads[i].aux_shifter_fd;
+                pfds[nfds].events = POLLIN;
+                pfds[nfds].revents = 0;
+                pfd_pad[nfds] = i;
+                pfd_kind[nfds] = 2;
+                nfds++;
+            }
+            if (pads[i].aux_hb_fd >= 0) {
+                pfds[nfds].fd = pads[i].aux_hb_fd;
+                pfds[nfds].events = POLLIN;
+                pfds[nfds].revents = 0;
+                pfd_pad[nfds] = i;
+                pfd_kind[nfds] = 3;
                 nfds++;
             }
         }
@@ -1813,19 +2349,32 @@ int main(void) {
         for (nfds_t k = 0; k < nfds; k++) {
             if (pfds[k].revents == 0) continue;
             int idx = pfd_pad[k];
+            int kind = pfd_kind[k];
             if (!pads[idx].active) continue;
 
             if (pfds[k].revents & (POLLERR | POLLHUP | POLLNVAL)) {
-                detach_pad(&pads[idx]);
+                if (kind <= 1) {
+                    detach_pad(&pads[idx]);
+                } else {
+                    close_wheel_aux(&pads[idx]);
+                }
                 continue;
             }
-            if (pfd_is_uinput[k]) {
-                if (pfds[k].revents & POLLIN) {
+            if (pfds[k].revents & POLLIN) {
+                if (kind == 1) {
                     handle_uinput_ff(&pads[idx]);
-                }
-            } else if (pfds[k].revents & POLLIN) {
-                if (process_pad_events(&pads[idx]) < 0) {
-                    detach_pad(&pads[idx]);
+                } else if (kind == 2) {
+                    if (process_aux_shifter_events(&pads[idx]) < 0) {
+                        close_wheel_aux(&pads[idx]);
+                    }
+                } else if (kind == 3) {
+                    if (process_aux_handbrake_events(&pads[idx]) < 0) {
+                        close_wheel_aux(&pads[idx]);
+                    }
+                } else {
+                    if (process_pad_events(&pads[idx]) < 0) {
+                        detach_pad(&pads[idx]);
+                    }
                 }
             }
         }

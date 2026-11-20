@@ -17,6 +17,9 @@ DEFAULT_VIRTUAL_NAME = "Microsoft X-Box 360 pad"
 
 VALID_DZ_MODES = ("axial", "radial", "hybrid")
 VALID_WHEEL_MODES = ("auto", "wheel", "gamepad")
+VALID_SHIFTER_MODES = ("none", "paddles", "sequential", "h_shifter")
+VALID_WHEEL_BTNS = ("A", "B", "X", "Y", "LB", "RB", "VIEW", "MENU")
+VALID_CLUTCH_MODES = ("none", "x_btn", "lb_btn")
 
 
 def sanitize_virtual_name(name: str | None) -> str:
@@ -52,6 +55,12 @@ class AntiDriftConfig:
     multi_controller: bool = True
     device_path: str = "auto"
     virtual_name: str = DEFAULT_VIRTUAL_NAME
+    lt_dz: float = 0.00
+    rt_dz: float = 0.00
+    lt_max: float = 1.00
+    rt_max: float = 1.00
+    lt_curve: float = 1.00
+    rt_curve: float = 1.00
     wheel_mode: str = "auto"  # "auto" | "wheel" | "gamepad"
     wheel_rotation_deg: int = 270
     wheel_steer_dz: float = 0.02
@@ -64,6 +73,16 @@ class AntiDriftConfig:
     wheel_invert_gas: bool = False
     wheel_invert_brake: bool = False
     wheel_combined_pedals: bool = False
+    wheel_shifter_mode: str = "paddles"  # "none" | "paddles" | "sequential" | "h_shifter"
+    wheel_shifter_device: str = "auto"
+    wheel_shifter_down_btn: str = "LB"
+    wheel_shifter_up_btn: str = "RB"
+    wheel_handbrake_enabled: bool = True
+    wheel_handbrake_device: str = "auto"
+    wheel_handbrake_target: str = "A"
+    wheel_handbrake_dz: float = 0.20
+    wheel_handbrake_invert: bool = False
+    wheel_clutch_mode: str = "none"  # "none" | "x_btn" | "lb_btn"
 
     def copy(self) -> AntiDriftConfig:
         """Return a shallow copy of the configuration."""
@@ -73,6 +92,31 @@ class AntiDriftConfig:
         """Return a copy with fields clamped to safe operational bounds."""
         mode = self.dz_mode if self.dz_mode in VALID_DZ_MODES else "axial"
         wmode = self.wheel_mode if self.wheel_mode in VALID_WHEEL_MODES else "auto"
+        smode = (
+            self.wheel_shifter_mode
+            if self.wheel_shifter_mode in VALID_SHIFTER_MODES
+            else "paddles"
+        )
+        s_down = (
+            self.wheel_shifter_down_btn
+            if self.wheel_shifter_down_btn in VALID_WHEEL_BTNS
+            else "LB"
+        )
+        s_up = (
+            self.wheel_shifter_up_btn
+            if self.wheel_shifter_up_btn in VALID_WHEEL_BTNS
+            else "RB"
+        )
+        hb_tgt = (
+            self.wheel_handbrake_target
+            if self.wheel_handbrake_target in ("A", "B", "X", "Y")
+            else "A"
+        )
+        cmode = (
+            self.wheel_clutch_mode
+            if self.wheel_clutch_mode in VALID_CLUTCH_MODES
+            else "none"
+        )
         return AntiDriftConfig(
             center_lx=max(-28000, min(28000, int(self.center_lx))),
             center_ly=max(-28000, min(28000, int(self.center_ly))),
@@ -92,6 +136,12 @@ class AntiDriftConfig:
             multi_controller=bool(self.multi_controller),
             device_path=(self.device_path or "auto").strip(),
             virtual_name=sanitize_virtual_name(self.virtual_name),
+            lt_dz=round(max(0.0, min(0.40, float(self.lt_dz))), 2),
+            rt_dz=round(max(0.0, min(0.40, float(self.rt_dz))), 2),
+            lt_max=round(max(0.10, min(1.00, float(self.lt_max))), 2),
+            rt_max=round(max(0.10, min(1.00, float(self.rt_max))), 2),
+            lt_curve=round(max(0.40, min(2.50, float(self.lt_curve))), 2),
+            rt_curve=round(max(0.40, min(2.50, float(self.rt_curve))), 2),
             wheel_mode=wmode,
             wheel_rotation_deg=max(180, min(1080, int(self.wheel_rotation_deg))),
             wheel_steer_dz=round(max(0.0, min(0.30, float(self.wheel_steer_dz))), 3),
@@ -104,6 +154,16 @@ class AntiDriftConfig:
             wheel_invert_gas=bool(self.wheel_invert_gas),
             wheel_invert_brake=bool(self.wheel_invert_brake),
             wheel_combined_pedals=bool(self.wheel_combined_pedals),
+            wheel_shifter_mode=smode,
+            wheel_shifter_device=(self.wheel_shifter_device or "auto").strip(),
+            wheel_shifter_down_btn=s_down,
+            wheel_shifter_up_btn=s_up,
+            wheel_handbrake_enabled=bool(self.wheel_handbrake_enabled),
+            wheel_handbrake_device=(self.wheel_handbrake_device or "auto").strip(),
+            wheel_handbrake_target=hb_tgt,
+            wheel_handbrake_dz=round(max(0.05, min(0.85, float(self.wheel_handbrake_dz))), 2),
+            wheel_handbrake_invert=bool(self.wheel_handbrake_invert),
+            wheel_clutch_mode=cmode,
         )
 
 
@@ -119,6 +179,32 @@ def _apply_kv_to_config(cfg: AntiDriftConfig, key: str, val_str: str) -> None:
             cfg.wheel_mode = val_str
         elif val_str in ("0", "1", "2"):
             cfg.wheel_mode = VALID_WHEEL_MODES[int(val_str)]
+        return
+    if key == "wheel_shifter_mode":
+        if val_str in VALID_SHIFTER_MODES:
+            cfg.wheel_shifter_mode = val_str
+        return
+    if key == "wheel_shifter_device":
+        cfg.wheel_shifter_device = val_str or "auto"
+        return
+    if key == "wheel_shifter_down_btn":
+        if val_str in VALID_WHEEL_BTNS:
+            cfg.wheel_shifter_down_btn = val_str
+        return
+    if key == "wheel_shifter_up_btn":
+        if val_str in VALID_WHEEL_BTNS:
+            cfg.wheel_shifter_up_btn = val_str
+        return
+    if key == "wheel_handbrake_device":
+        cfg.wheel_handbrake_device = val_str or "auto"
+        return
+    if key == "wheel_handbrake_target":
+        if val_str in ("A", "B", "X", "Y"):
+            cfg.wheel_handbrake_target = val_str
+        return
+    if key == "wheel_clutch_mode":
+        if val_str in VALID_CLUTCH_MODES:
+            cfg.wheel_clutch_mode = val_str
         return
     if key == "dz_mode":
         if val_str in VALID_DZ_MODES:
@@ -182,6 +268,24 @@ def _apply_kv_to_config(cfg: AntiDriftConfig, key: str, val_str: str) -> None:
         cfg.wheel_invert_brake = bool(int(val))
     elif key == "wheel_combined_pedals":
         cfg.wheel_combined_pedals = bool(int(val))
+    elif key == "lt_dz":
+        cfg.lt_dz = val
+    elif key == "rt_dz":
+        cfg.rt_dz = val
+    elif key == "lt_max":
+        cfg.lt_max = val
+    elif key == "rt_max":
+        cfg.rt_max = val
+    elif key == "lt_curve":
+        cfg.lt_curve = val
+    elif key == "rt_curve":
+        cfg.rt_curve = val
+    elif key == "wheel_handbrake_enabled":
+        cfg.wheel_handbrake_enabled = bool(int(val))
+    elif key == "wheel_handbrake_dz":
+        cfg.wheel_handbrake_dz = val
+    elif key == "wheel_handbrake_invert":
+        cfg.wheel_handbrake_invert = bool(int(val))
 
 
 def load_config(path: Path = DEFAULT_CONFIG_PATH) -> AntiDriftConfig:
@@ -230,6 +334,22 @@ def _format_config_lines(cfg: AntiDriftConfig, include_global_routing: bool = Tr
         f"wheel_invert_gas = {1 if clean.wheel_invert_gas else 0}",
         f"wheel_invert_brake = {1 if clean.wheel_invert_brake else 0}",
         f"wheel_combined_pedals = {1 if clean.wheel_combined_pedals else 0}",
+        f"lt_dz = {clean.lt_dz:.2f}",
+        f"rt_dz = {clean.rt_dz:.2f}",
+        f"lt_max = {clean.lt_max:.2f}",
+        f"rt_max = {clean.rt_max:.2f}",
+        f"lt_curve = {clean.lt_curve:.2f}",
+        f"rt_curve = {clean.rt_curve:.2f}",
+        f"wheel_shifter_mode = {clean.wheel_shifter_mode}",
+        f"wheel_shifter_device = {clean.wheel_shifter_device}",
+        f"wheel_shifter_down_btn = {clean.wheel_shifter_down_btn}",
+        f"wheel_shifter_up_btn = {clean.wheel_shifter_up_btn}",
+        f"wheel_handbrake_enabled = {1 if clean.wheel_handbrake_enabled else 0}",
+        f"wheel_handbrake_device = {clean.wheel_handbrake_device}",
+        f"wheel_handbrake_target = {clean.wheel_handbrake_target}",
+        f"wheel_handbrake_dz = {clean.wheel_handbrake_dz:.2f}",
+        f"wheel_handbrake_invert = {1 if clean.wheel_handbrake_invert else 0}",
+        f"wheel_clutch_mode = {clean.wheel_clutch_mode}",
     ]
     if include_global_routing:
         lines.append(f"multi_controller = {1 if clean.multi_controller else 0}")
@@ -389,6 +509,28 @@ def apply_hair_trigger(val: int, hair_trigger: bool) -> int:
     if not hair_trigger:
         return val
     return TRIGGER_MAX if val >= 100 else 0
+
+
+def compute_trigger_output(
+    raw_val: int,
+    dz: float = 0.0,
+    max_out: float = 1.0,
+    curve: float = 1.0,
+    hair_trigger: bool = False,
+) -> int:
+    """Apply trigger inner deadzone, custom response curve, and max output cap [0..1023]."""
+    clamped_raw = max(0, min(TRIGGER_MAX, int(raw_val)))
+    cap = max(0.10, min(1.0, float(max_out)))
+    if hair_trigger:
+        return max(0, min(TRIGGER_MAX, round(cap * float(TRIGGER_MAX)))) if clamped_raw >= 100 else 0
+    dz_c = max(0.0, min(0.95, float(dz)))
+    frac = float(clamped_raw) / float(TRIGGER_MAX)
+    if frac <= dz_c:
+        return 0
+    scaled = min(1.0, (frac - dz_c) / (1.0 - dz_c))
+    if curve != 1.0 and scaled > 0.0:
+        scaled = min(1.0, pow(scaled, float(curve)))
+    return max(0, min(TRIGGER_MAX, round(scaled * cap * float(TRIGGER_MAX))))
 
 
 def deadzone_raw_bounds(center: int, dz: float) -> tuple[float, float]:
