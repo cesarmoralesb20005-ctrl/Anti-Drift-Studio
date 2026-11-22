@@ -1266,6 +1266,8 @@ class SteeringWheelTests(unittest.TestCase):
         self.assertEqual(hm_t80.lt_code, er.ABS_RX)
         self.assertEqual(hm_t80.rt_code, er.ABS_RY)
         self.assertTrue(hm_t80.use_ds4_hid_btns)
+        self.assertNotIn(310, er.DS4_HID_BUTTON_MAP)
+        self.assertNotIn(311, er.DS4_HID_BUTTON_MAP)
 
     def test_wheel_visualizer_simulator_and_main_window_controls(self) -> None:
         from PySide6.QtCore import QPointF, Qt

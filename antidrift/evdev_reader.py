@@ -108,8 +108,8 @@ DS4_HID_BUTTON_MAP: dict[int, str] = {
     307: "Y",
     308: "LB",
     309: "RB",
-    310: "LB",
-    311: "RB",
+    # 310/311 are digital L2/R2 flags fired alongside analog ABS_RX/ABS_RY pedals;
+    # ignoring them keeps pedals from triggering the LB/RB gear paddles.
     312: "VIEW",
     313: "MENU",
     314: "LS",

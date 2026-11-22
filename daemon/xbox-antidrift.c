@@ -1132,10 +1132,9 @@ static int translate_ds4_hid_button(int code) {
         case 305: return 304; /* Cross -> A */
         case 306: return 305; /* Circle -> B */
         case 307: return 308; /* Triangle -> Y */
-        case 308: return 310; /* L1 -> LB */
-        case 309: return 311; /* R1 -> RB */
-        case 310: return 310;
-        case 311: return 311;
+        case 308: return 310; /* L1 paddle -> LB */
+        case 309: return 311; /* R1 paddle -> RB */
+        /* 310/311 are digital L2/R2 pedal flags alongside ABS_RX/ABS_RY; ignore to avoid ghost paddle shifts. */
         case 312: return 314; /* Share -> VIEW */
         case 313: return 315; /* Options -> MENU */
         case 314: return 317; /* L3 -> LS */
