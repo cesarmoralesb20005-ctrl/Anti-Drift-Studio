@@ -283,35 +283,19 @@ def discover_open_windows() -> list[DetectedWindow]:
     return found
 
 
-def pick_window_with_click() -> tuple[DetectedWindow | None, str]:
-    """Let the user click any visible window (via xprop) and resolve its process info."""
-    if not shutil.which("xprop") or not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
-        return None, "Selector por clic no disponible (usa 'Detectar ventanas abiertas')."
-    try:
-        proc = subprocess.run(
-            ["xprop", "_NET_WM_PID", "_NET_WM_NAME", "WM_NAME", "WM_CLASS"],
-            capture_output=True,
-            text=True,
-            timeout=20.0,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        return None, "Se agotó el tiempo esperando clic en una ventana."
-    except OSError as exc:
-        return None, f"No se pudo lanzar xprop: {exc}"
-
-    if proc.returncode != 0:
-        return None, "Selección cancelada (si es app Wayland nativa, selecciónala de la lista)."
-
-    pid_m = re.search(r"_NET_WM_PID\(CARDINAL\)\s*=\s*(\d+)", proc.stdout)
-    title_m = re.search(r'_NET_WM_NAME\([^)]+\)\s*=\s*"([^"]*)"', proc.stdout) or re.search(
-        r'WM_NAME\([^)]+\)\s*=\s*"([^"]*)"', proc.stdout
+def _parse_xprop_window_output(stdout: str) -> DetectedWindow | None:
+    """Build a DetectedWindow from xprop _NET_WM_PID/_NET_WM_NAME/WM_CLASS stdout."""
+    pid_m = re.search(r"_NET_WM_PID\(CARDINAL\)\s*=\s*(\d+)", stdout)
+    title_m = re.search(r'_NET_WM_NAME\([^)]+\)\s*=\s*"([^"]*)"', stdout) or re.search(
+        r'WM_NAME\([^)]+\)\s*=\s*"([^"]*)"', stdout
     )
-    cls_m = re.search(r'WM_CLASS\([^)]+\)\s*=\s*"([^"]*)"', proc.stdout)
+    cls_m = re.search(r'WM_CLASS\([^)]+\)\s*=\s*"([^"]*)"', stdout)
 
     title = title_m.group(1).strip() if title_m else ""
     wm_class = cls_m.group(1).strip() if cls_m else ""
     pid = int(pid_m.group(1)) if pid_m else 0
+    if pid == os.getpid():
+        return None
 
     proc_name = ""
     exec_cmd = ""
@@ -330,20 +314,104 @@ def pick_window_with_click() -> tuple[DetectedWindow | None, str]:
     if not proc_name:
         proc_name = sanitize_process_name(wm_class or title)
     if not proc_name:
-        return None, "No se pudo identificar el ejecutable de esa ventana."
+        return None
 
-    return (
-        DetectedWindow(
-            pid=pid,
-            title=title or proc_name,
-            process_name=proc_name,
-            exec_cmd=exec_cmd,
-            api_hint=api_hint,
-            hud_loaded=hud_loaded,
-            wm_class=wm_class,
-        ),
-        f"Ventana capturada: {title or proc_name} ({proc_name})",
+    return DetectedWindow(
+        pid=pid,
+        title=title or proc_name,
+        process_name=proc_name,
+        exec_cmd=exec_cmd,
+        api_hint=api_hint,
+        hud_loaded=hud_loaded,
+        wm_class=wm_class,
     )
+
+
+def _resolve_x11_window(wid: str) -> DetectedWindow | None:
+    """Inspect an X11/XWayland window ID safely without pointer grabbing."""
+    try:
+        info = subprocess.run(
+            ["xprop", "-id", wid, "_NET_WM_PID", "_NET_WM_NAME", "WM_NAME", "WM_CLASS"],
+            capture_output=True,
+            text=True,
+            timeout=0.7,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if info.returncode != 0:
+        return None
+    return _parse_xprop_window_output(info.stdout)
+
+
+def _active_x11_window_in_list() -> str:
+    """Return active window hex ID only if it exists in _NET_CLIENT_LIST."""
+    try:
+        out = subprocess.run(
+            ["xprop", "-root", "_NET_CLIENT_LIST", "_NET_ACTIVE_WINDOW"],
+            capture_output=True,
+            text=True,
+            timeout=0.7,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    if out.returncode != 0:
+        return ""
+    client_ids: set[str] = set()
+    active_id = ""
+    for line in out.stdout.splitlines():
+        if line.startswith("_NET_CLIENT_LIST") and "#" in line:
+            client_ids.update(m.lower() for m in re.findall(r"0x[0-9a-fA-F]+", line.split("#", 1)[1]))
+        elif line.startswith("_NET_ACTIVE_WINDOW") and "#" in line:
+            m = re.search(r"0x[0-9a-fA-F]+", line.split("#", 1)[1])
+            if m:
+                active_id = m.group(0).lower()
+    if active_id and active_id in client_ids:
+        return active_id
+    return ""
+
+
+def pick_window_with_click() -> tuple[DetectedWindow | None, str]:
+    """Safely capture the next focused window without grabbing pointer on Wayland."""
+    if not shutil.which("xprop") or not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+        return None, "Selector no disponible (elige la ventana en la lista desplegable)."
+
+    # On Wayland/XWayland, bare `xprop` calls XGrabPointer and can stall kwin_wayland/Proton.
+    # Instead, watch _NET_ACTIVE_WINDOW non-destructively (zero pointer grab) for 8 seconds.
+    if os.environ.get("WAYLAND_DISPLAY"):
+        initial_wid = _active_x11_window_in_list()
+        deadline = time.monotonic() + 8.0
+        while time.monotonic() < deadline:
+            wid = _active_x11_window_in_list()
+            if wid and wid != initial_wid:
+                win = _resolve_x11_window(wid)
+                if win is not None:
+                    return win, f"Ventana capturada: {win.title} ({win.process_name})"
+            time.sleep(0.25)
+        return None, "No se detectó cambio de ventana (si ya está abierta, selecciónala en la lista)."
+
+    # Pure X11 session: interactive xprop click
+    try:
+        proc = subprocess.run(
+            ["xprop", "_NET_WM_PID", "_NET_WM_NAME", "WM_NAME", "WM_CLASS"],
+            capture_output=True,
+            text=True,
+            timeout=15.0,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return None, "Se agotó el tiempo esperando clic en una ventana."
+    except OSError as exc:
+        return None, f"No se pudo lanzar xprop: {exc}"
+
+    if proc.returncode != 0:
+        return None, "Selección cancelada (puedes elegirla desde la lista)."
+
+    win = _parse_xprop_window_output(proc.stdout)
+    if win is None:
+        return None, "No se pudo identificar el ejecutable de esa ventana."
+    return win, f"Ventana capturada: {win.title} ({win.process_name})"
 
 
 def list_desktop_apps() -> list[DesktopAppInfo]:

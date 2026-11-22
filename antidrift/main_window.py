@@ -1708,7 +1708,7 @@ class MainWindow(QMainWindow):
         opt_title.setObjectName("SectionTitle")
         self._opt_distro_lbl = QLabel("Distro: detectando...")
         self._opt_distro_lbl.setObjectName("MutedNote")
-        btn_opt_refresh = QPushButton("↻ Comprobar")
+        btn_opt_refresh = QPushButton("Comprobar")
         btn_opt_refresh.setObjectName("MiniPill")
         btn_opt_refresh.clicked.connect(self._refresh_optional_deps_ui)
         opt_hdr.addWidget(opt_title)
@@ -3087,7 +3087,7 @@ class MainWindow(QMainWindow):
             rlay.addLayout(txt_col, 1)
 
             if dep.installed:
-                st_lbl = QLabel("✓ Instalado")
+                st_lbl = QLabel("Instalado")
                 st_lbl.setStyleSheet("color: #34D399; font-weight: 700; font-size: 12px;")
                 rlay.addWidget(st_lbl)
             else:
