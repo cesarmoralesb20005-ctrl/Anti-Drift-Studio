@@ -58,12 +58,12 @@ from .mh_config import (
 )
 
 _POS_LABELS: tuple[tuple[str, str], ...] = (
-    ("top-left", "Sup. Izq"),
-    ("top-center", "Sup. Centro"),
-    ("top-right", "Sup. Der"),
-    ("bottom-left", "Inf. Izq"),
-    ("bottom-center", "Inf. Centro"),
-    ("bottom-right", "Inf. Der"),
+    ("top-left", "↖ Arriba Izq"),
+    ("top-center", "⬆ Arriba"),
+    ("top-right", "↗ Arriba Der"),
+    ("bottom-left", "↙ Abajo Izq"),
+    ("bottom-center", "⬇ Abajo"),
+    ("bottom-right", "↘ Abajo Der"),
 )
 
 _METRIC_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
@@ -294,13 +294,13 @@ class MangoHudPreviewWidget(QWidget):
         p.setFont(QFont("JetBrains Mono", 8))
         mode_tag = {
             "off": "MODO MANUAL",
-            "selective": "SELECTIVO (MIS VENTANAS)",
+            "selective": "SOLO MIS JUEGOS",
             "global": "GLOBAL (TODO 3D)",
         }.get(self._cfg.session_mode, "")
         p.drawText(
             QRectF(outer.left() + 22.0, outer.bottom() - footer_h, outer.width() - 32.0, footer_h),
             Qt.AlignVCenter | Qt.AlignLeft,
-            f"EN VIVO (sensores reales) · {mode_tag}",
+            f"EN VIVO · {mode_tag}",
         )
 
         rows = self._hud_lines()
@@ -462,6 +462,7 @@ class MangoHudTabWidget(QWidget):
         self._install_thread: _MhInstallThread | None = None
         self._pick_thread: _WindowPickThread | None = None
         self._wheel_guard = _NoWheelFilter(self)
+        self._rule_adv_widgets: list[QWidget] = []
         self._build_ui()
         self._apply_config_to_widgets()
         self.refresh_installation_status()
@@ -477,7 +478,7 @@ class MangoHudTabWidget(QWidget):
         lay.setContentsMargins(0, 0, 6, 0)
         lay.setSpacing(10)
 
-        # Card 0: Installation status & distro installer
+        # Card 0: Installation status & quick demo button
         status_card = QFrame()
         status_card.setObjectName("Card")
         st_lay = QHBoxLayout(status_card)
@@ -485,7 +486,7 @@ class MangoHudTabWidget(QWidget):
         st_lay.setSpacing(10)
         st_txt = QVBoxLayout()
         st_txt.setSpacing(2)
-        st_title = QLabel("MangoHud (Overlay de rendimiento en vivo)")
+        st_title = QLabel("MangoHud (FPS, GPU y CPU en tus juegos)")
         st_title.setObjectName("SectionTitle")
         self._install_status_lbl = QLabel("Comprobando MangoHud...")
         self._install_status_lbl.setWordWrap(True)
@@ -494,13 +495,19 @@ class MangoHudTabWidget(QWidget):
         st_txt.addWidget(self._install_status_lbl)
         st_lay.addLayout(st_txt, 1)
 
+        btn_demo = QPushButton("▶ Probar ahora")
+        btn_demo.setObjectName("MiniPill")
+        btn_demo.setToolTip("Abre una ventana de prueba rápida para ver tu HUD real")
+        btn_demo.clicked.connect(self._on_launch_demo)
+        st_lay.addWidget(btn_demo)
+
         self._btn_install_mh = QPushButton("Instalar MangoHud")
         self._btn_install_mh.setObjectName("AccentBtn")
         self._btn_install_mh.clicked.connect(self._on_install_mangohud)
         st_lay.addWidget(self._btn_install_mh)
         lay.addWidget(status_card)
 
-        # Row 1: Session Mode + Live Preview side-by-side
+        # Row 1: Step 1 (Simple 2-choice Mode) + Live Preview side-by-side
         top_split = QHBoxLayout()
         top_split.setSpacing(10)
 
@@ -509,15 +516,14 @@ class MangoHudTabWidget(QWidget):
         mlay = QVBoxLayout(mode_card)
         mlay.setContentsMargins(14, 10, 14, 10)
         mlay.setSpacing(8)
-        m_title = QLabel("1. Cómo ponerlo en tus ventanas")
+        m_title = QLabel("1. ¿Dónde quieres ver el HUD?")
         m_title.setObjectName("SectionTitle")
         mlay.addWidget(m_title)
 
         self._mode_btns: dict[str, QPushButton] = {}
         for mid, mlabel, mtip in (
-            ("selective", "Solo mis ventanas", "Activa MANGOHUD=1 en sesión pero lo oculta fuera de tu lista"),
-            ("global", "Global (Todo 3D)", "Muestra MangoHud en cualquier ventana Vulkan/OpenGL que abras"),
-            ("off", "Solo al lanzar aquí / Steam", "No activa MANGOHUD=1 global; úsalo con Lanzar o mangohud %command%"),
+            ("selective", "Solo en mis juegos elegidos (Recomendado)", "Solo aparece en las ventanas/juegos de la lista de abajo"),
+            ("global", "En todos los juegos automáticamente", "Aparece en cualquier juego Vulkan/OpenGL que abras"),
         ):
             b = QPushButton(mlabel)
             b.setObjectName("MiniPill")
@@ -527,25 +533,12 @@ class MangoHudTabWidget(QWidget):
             self._mode_btns[mid] = b
             mlay.addWidget(b)
 
-        self._flatpak_chk = QCheckBox("Habilitar también para apps Flatpak")
-        self._flatpak_chk.toggled.connect(self._on_flatpak_toggled)
-        mlay.addWidget(self._flatpak_chk)
-
-        act_row = QHBoxLayout()
-        act_row.setSpacing(6)
-        btn_demo = QPushButton("▶ Probar en ventana demo")
-        btn_demo.setObjectName("AccentBtn")
-        btn_demo.clicked.connect(self._on_launch_demo)
-        btn_toggle_live = QPushButton("Mostrar/Ocultar en vivo")
-        btn_toggle_live.setObjectName("MiniPill")
-        btn_toggle_live.clicked.connect(self._on_toggle_live)
-        btn_copy_steam = QPushButton("Copiar para Steam")
-        btn_copy_steam.setObjectName("MiniPill")
-        btn_copy_steam.clicked.connect(self._on_copy_steam_cmd)
-        act_row.addWidget(btn_demo)
-        act_row.addWidget(btn_toggle_live)
-        act_row.addWidget(btn_copy_steam)
-        mlay.addLayout(act_row)
+        tip_lbl = QLabel(
+            "Tip: dentro de cualquier juego puedes pulsar Shift Derecho + F12 para ocultar o mostrar el HUD al instante."
+        )
+        tip_lbl.setObjectName("MutedNote")
+        tip_lbl.setWordWrap(True)
+        mlay.addWidget(tip_lbl)
         mlay.addStretch(1)
 
         prev_card = QFrame()
@@ -563,62 +556,56 @@ class MangoHudTabWidget(QWidget):
         top_split.addWidget(prev_card, 1)
         lay.addLayout(top_split)
 
-        # Card 2: Target Any Window / Process Rules
+        # Card 2: Step 2 (Pick your game or window — dead simple)
         win_card = QFrame()
         win_card.setObjectName("Card")
         wlay = QVBoxLayout(win_card)
         wlay.setContentsMargins(14, 10, 14, 10)
         wlay.setSpacing(8)
 
-        win_hdr = QHBoxLayout()
-        win_title = QLabel("2. Ventanas y juegos elegidos (pon MangoHud en cualquier ventana)")
+        win_title = QLabel("2. Elige tu juego o ventana")
         win_title.setObjectName("SectionTitle")
-        win_hdr.addWidget(win_title)
-        win_hdr.addStretch(1)
-        wlay.addLayout(win_hdr)
+        wlay.addWidget(win_title)
 
         win_tools = QHBoxLayout()
         win_tools.setSpacing(6)
-        self._btn_pick_click = QPushButton("🎯 Elegir ventana con clic")
+        self._btn_pick_click = QPushButton("🎯 Clic en ventana abierta")
         self._btn_pick_click.setObjectName("AccentBtn")
-        self._btn_pick_click.setToolTip("Haz clic en cualquier ventana abierta en pantalla para agregarla")
+        self._btn_pick_click.setToolTip("Pulsa aquí y luego haz clic en la ventana donde quieres el HUD")
         self._btn_pick_click.clicked.connect(self._on_pick_window_click)
-
-        btn_scan = QPushButton("↻ Detectar ventanas abiertas")
-        btn_scan.setObjectName("MiniPill")
-        btn_scan.clicked.connect(self.refresh_open_windows)
 
         btn_add_desktop = QPushButton("+ App instalada")
         btn_add_desktop.setObjectName("MiniPill")
         btn_add_desktop.clicked.connect(self._on_add_desktop_app)
 
-        btn_add_bin = QPushButton("+ Ejecutable / Proceso")
+        btn_add_bin = QPushButton("+ Archivo o nombre (.exe)")
         btn_add_bin.setObjectName("MiniPill")
         btn_add_bin.clicked.connect(self._on_add_custom_process)
 
-        for b in (self._btn_pick_click, btn_scan, btn_add_desktop, btn_add_bin):
+        for b in (self._btn_pick_click, btn_add_desktop, btn_add_bin):
             win_tools.addWidget(b)
         win_tools.addStretch(1)
         wlay.addLayout(win_tools)
 
-        self._detected_label = QLabel("Ventanas abiertas detectadas (haz clic para agregar a tu lista o lanzar):")
-        self._detected_label.setObjectName("MutedNote")
-        wlay.addWidget(self._detected_label)
-
         det_row = QHBoxLayout()
         det_row.setSpacing(6)
         self._detected_combo = QComboBox()
-        self._detected_combo.setMinimumWidth(260)
+        self._detected_combo.setMinimumWidth(240)
         self._guard_wheel(self._detected_combo)
         det_row.addWidget(self._detected_combo, 1)
-        btn_add_det = QPushButton("+ Añadir ventana seleccionada")
+        btn_add_det = QPushButton("+ Añadir")
         btn_add_det.setObjectName("MiniPill")
         btn_add_det.clicked.connect(self._on_add_detected_window)
+        btn_scan = QPushButton("↻")
+        btn_scan.setObjectName("MiniPill")
+        btn_scan.setToolTip("Actualizar lista de ventanas abiertas")
+        btn_scan.clicked.connect(self.refresh_open_windows)
         det_row.addWidget(btn_add_det)
+        det_row.addWidget(btn_scan)
         wlay.addLayout(det_row)
 
         self._rules_empty_lbl = QLabel(
-            "Aún no agregas ventanas específicas. Captura una ventana arriba o añade tu juego (.exe / app)."
+            "Todavía no agregas ningún juego o ventana. Abre tu juego y usa '🎯 Clic en ventana abierta' o el selector de arriba."
         )
         self._rules_empty_lbl.setObjectName("MutedNote")
         self._rules_empty_lbl.setWordWrap(True)
@@ -629,19 +616,19 @@ class MangoHudTabWidget(QWidget):
         wlay.addLayout(self._rules_container)
         lay.addWidget(win_card)
 
-        # Card 3: HUD Design, Presets & Position
+        # Card 3: Step 3 (Simple Preset & Corner)
         des_card = QFrame()
         des_card.setObjectName("Card")
         dlay = QVBoxLayout(des_card)
         dlay.setContentsMargins(14, 10, 14, 10)
         dlay.setSpacing(8)
-        d_title = QLabel("3. Diseño, presets y posición")
+        d_title = QLabel("3. Estilo y esquina en pantalla")
         d_title.setObjectName("SectionTitle")
         dlay.addWidget(d_title)
 
         pr_row = QHBoxLayout()
         pr_row.setSpacing(6)
-        pr_row.addWidget(QLabel("Preset:"))
+        pr_row.addWidget(QLabel("Estilo:"))
         self._preset_btns: dict[str, QPushButton] = {}
         for pname in MANGOHUD_PRESETS:
             b = QPushButton(pname)
@@ -655,7 +642,7 @@ class MangoHudTabWidget(QWidget):
 
         pos_row = QHBoxLayout()
         pos_row.setSpacing(6)
-        pos_row.addWidget(QLabel("Posición:"))
+        pos_row.addWidget(QLabel("Esquina:"))
         self._pos_btns: dict[str, QPushButton] = {}
         for pk, plbl in _POS_LABELS:
             b = QPushButton(plbl)
@@ -666,6 +653,47 @@ class MangoHudTabWidget(QWidget):
             pos_row.addWidget(b)
         pos_row.addStretch(1)
         dlay.addLayout(pos_row)
+        lay.addWidget(des_card)
+
+        # Collapsible Advanced Section (tucked away by default so basics stay effortless)
+        self._adv_toggle_btn = QPushButton("⚙ Opciones avanzadas (métricas, límite FPS, tamaño, Steam, Flatpak)")
+        self._adv_toggle_btn.setObjectName("MiniPill")
+        self._adv_toggle_btn.setCheckable(True)
+        self._adv_toggle_btn.setChecked(False)
+        self._adv_toggle_btn.toggled.connect(self._on_advanced_toggled)
+        lay.addWidget(self._adv_toggle_btn, 0, Qt.AlignLeft)
+
+        self._advanced_panel = QFrame()
+        self._advanced_panel.setObjectName("Card")
+        self._advanced_panel.setVisible(False)
+        adv_lay = QVBoxLayout(self._advanced_panel)
+        adv_lay.setContentsMargins(14, 10, 14, 10)
+        adv_lay.setSpacing(10)
+
+        adv_tools = QHBoxLayout()
+        adv_tools.setSpacing(8)
+        b_off = QPushButton("Modo manual (Solo lanzar aquí / Steam)")
+        b_off.setObjectName("MiniPill")
+        b_off.setCheckable(True)
+        b_off.setToolTip("No activa MANGOHUD=1 en sesión; solo al abrir desde aquí o con mangohud %command%")
+        b_off.clicked.connect(lambda _=False: self._on_session_mode_selected("off"))
+        self._mode_btns["off"] = b_off
+        adv_tools.addWidget(b_off)
+
+        btn_toggle_live = QPushButton("Mostrar/Ocultar en vivo")
+        btn_toggle_live.setObjectName("MiniPill")
+        btn_toggle_live.clicked.connect(self._on_toggle_live)
+        btn_copy_steam = QPushButton("Copiar para Steam")
+        btn_copy_steam.setObjectName("MiniPill")
+        btn_copy_steam.clicked.connect(self._on_copy_steam_cmd)
+        adv_tools.addWidget(btn_toggle_live)
+        adv_tools.addWidget(btn_copy_steam)
+        adv_tools.addStretch(1)
+        adv_lay.addLayout(adv_tools)
+
+        self._flatpak_chk = QCheckBox("Habilitar también para apps Flatpak")
+        self._flatpak_chk.toggled.connect(self._on_flatpak_toggled)
+        adv_lay.addWidget(self._flatpak_chk)
 
         style_grid = QGridLayout()
         style_grid.setHorizontalSpacing(10)
@@ -714,7 +742,7 @@ class MangoHudTabWidget(QWidget):
             qb.clicked.connect(lambda _=False, fv=fval: self._fps_limit_spin.setValue(fv))
             fps_q_row.addWidget(qb)
         style_grid.addLayout(fps_q_row, 3, 2)
-        dlay.addLayout(style_grid)
+        adv_lay.addLayout(style_grid)
 
         opt_row = QHBoxLayout()
         opt_row.setSpacing(14)
@@ -725,18 +753,11 @@ class MangoHudTabWidget(QWidget):
         opt_row.addWidget(self._horiz_chk)
         opt_row.addWidget(self._no_margin_chk)
         opt_row.addStretch(1)
-        dlay.addLayout(opt_row)
-        lay.addWidget(des_card)
+        adv_lay.addLayout(opt_row)
 
-        # Card 4: Metrics Grid
-        met_card = QFrame()
-        met_card.setObjectName("Card")
-        met_lay = QVBoxLayout(met_card)
-        met_lay.setContentsMargins(14, 10, 14, 10)
-        met_lay.setSpacing(8)
-        met_title = QLabel("4. Métricas visibles y teclas rápidas")
-        met_title.setObjectName("SectionTitle")
-        met_lay.addWidget(met_title)
+        met_title = QLabel("Métricas personalizadas y teclas rápidas")
+        met_title.setStyleSheet("color: #E2E8F0; font-weight: 700; font-size: 12.5px;")
+        adv_lay.addWidget(met_title)
 
         cols = QHBoxLayout()
         cols.setSpacing(12)
@@ -754,7 +775,7 @@ class MangoHudTabWidget(QWidget):
                 col.addWidget(chk)
             col.addStretch(1)
             cols.addLayout(col, 1)
-        met_lay.addLayout(cols)
+        adv_lay.addLayout(cols)
 
         hk_row = QHBoxLayout()
         hk_row.setSpacing(8)
@@ -770,8 +791,8 @@ class MangoHudTabWidget(QWidget):
         self._hk_fps_edit = QLineEdit()
         self._hk_fps_edit.textChanged.connect(self._on_hotkeys_changed)
         hk_row.addWidget(self._hk_fps_edit)
-        met_lay.addLayout(hk_row)
-        lay.addWidget(met_card)
+        adv_lay.addLayout(hk_row)
+        lay.addWidget(self._advanced_panel)
 
         lay.addStretch(1)
         scroll.setWidget(inner)
@@ -803,19 +824,25 @@ class MangoHudTabWidget(QWidget):
         if installed:
             ver = mangohud_version()
             self._install_status_lbl.setText(
-                f"✓ MangoHud listo ({ver}) · Distro detectada: {distro.pretty_name} ({distro.pkg_manager})"
+                f"✓ MangoHud listo ({ver}) · Sistema: {distro.pretty_name}"
             )
             self._install_status_lbl.setStyleSheet("color: #34D399; font-size: 12.5px;")
-            self._btn_install_mh.setText("✓ MangoHud instalado")
+            self._btn_install_mh.setVisible(False)
             self._btn_install_mh.setEnabled(False)
         else:
             self._install_status_lbl.setText(
-                f"⚠ MangoHud no está instalado · Distro: {distro.pretty_name} ({distro.pkg_manager}). "
-                "Puedes instalarlo en 1 clic aquí o desde Ajustes → Dependencias opcionales."
+                f"⚠ Falta instalar MangoHud ({distro.pretty_name} · {distro.pkg_manager}). "
+                "Pulsa el botón para instalarlo automáticamente."
             )
             self._install_status_lbl.setStyleSheet("color: #FBBF24; font-size: 12.5px;")
             self._btn_install_mh.setText(f"Instalar MangoHud ({distro.pkg_manager})")
+            self._btn_install_mh.setVisible(True)
             self._btn_install_mh.setEnabled(True)
+
+    def _on_advanced_toggled(self, open_adv: bool) -> None:
+        self._advanced_panel.setVisible(bool(open_adv))
+        for w in self._rule_adv_widgets:
+            w.setVisible(bool(open_adv))
 
     def _on_install_mangohud(self) -> None:
         if self._install_thread is not None:
@@ -922,16 +949,7 @@ class MangoHudTabWidget(QWidget):
         if not isinstance(win, DetectedWindow):
             return
         self._add_or_enable_rule(win.title, win.process_name, win.exec_cmd)
-        if win.hud_loaded:
-            self._save_status_lbl.setStyleSheet("color: #34D399; font-size: 12px;")
-            self._save_status_lbl.setText(
-                f"Ventana '{win.process_name}' añadida (ya tiene HUD activo). Pulsa 'Guardar y aplicar MangoHud'."
-            )
-        else:
-            self._save_status_lbl.setStyleSheet("color: #FBBF24; font-size: 12px;")
-            self._save_status_lbl.setText(
-                f"Ventana '{win.process_name}' añadida. Pulsa 'Guardar y aplicar' y luego cierra y vuelve a abrir '{win.process_name}'."
-            )
+        self.save_and_apply()
 
     def _on_add_desktop_app(self) -> None:
         apps = list_desktop_apps()
@@ -942,7 +960,7 @@ class MangoHudTabWidget(QWidget):
         if dlg.exec() == QDialog.Accepted and dlg.selected_app is not None:
             app = dlg.selected_app
             self._add_or_enable_rule(app.name, app.process_name, app.exec_cmd)
-            self._save_status_lbl.setText(f"App '{app.name}' añadida.")
+            self.save_and_apply()
 
     def _on_add_custom_process(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(
@@ -953,6 +971,7 @@ class MangoHudTabWidget(QWidget):
         if file_path:
             pname = sanitize_process_name(file_path)
             self._add_or_enable_rule(pname, pname, file_path)
+            self.save_and_apply()
             return
         txt, ok = QInputDialog.getText(
             self,
@@ -962,14 +981,17 @@ class MangoHudTabWidget(QWidget):
         if ok and txt.strip():
             pname = sanitize_process_name(txt)
             self._add_or_enable_rule(pname, pname, "")
+            self.save_and_apply()
 
     def _rebuild_rules_list(self) -> None:
+        self._rule_adv_widgets.clear()
         while self._rules_container.count():
             item = self._rules_container.takeAt(0)
             w = item.widget()
             if w is not None:
                 w.deleteLater()
 
+        adv_open = self._adv_toggle_btn.isChecked() if hasattr(self, "_adv_toggle_btn") else False
         has_rules = bool(self._config.window_rules)
         self._rules_empty_lbl.setVisible(not has_rules)
         for idx, rule in enumerate(self._config.window_rules):
@@ -995,7 +1017,7 @@ class MangoHudTabWidget(QWidget):
                 state_lbl.setText("⚠ Abierta sin HUD: cierra y vuelve a abrir")
                 state_lbl.setStyleSheet("color: #FBBF24; font-size: 11px; font-weight: 600;")
             else:
-                state_lbl.setText("Listo para al abrir")
+                state_lbl.setText("Listo al abrir")
                 state_lbl.setStyleSheet("color: #64748B; font-size: 11px;")
             rlay.addWidget(state_lbl)
 
@@ -1011,6 +1033,8 @@ class MangoHudTabWidget(QWidget):
             pos_combo.currentIndexChanged.connect(
                 lambda _ci, i=idx, c=pos_combo: self._on_rule_pos_changed(i, str(c.currentData() or ""))
             )
+            pos_combo.setVisible(adv_open)
+            self._rule_adv_widgets.append(pos_combo)
             rlay.addWidget(pos_combo)
 
             fps_combo = QComboBox()
@@ -1026,16 +1050,13 @@ class MangoHudTabWidget(QWidget):
             fps_combo.currentIndexChanged.connect(
                 lambda _ci, i=idx, c=fps_combo: self._on_rule_fps_changed(i, int(c.currentData()))
             )
-            rlay.addWidget(fps_combo)
+            fps_combo.setVisible(adv_open)
+            self._rule_adv_widgets.append(fps_combo)
 
-            btn_launch = QPushButton("▶ Lanzar")
+            btn_launch = QPushButton("▶ Abrir")
             btn_launch.setObjectName("MiniPill")
             can_launch = bool(rule.exec_cmd or not rule.process_name.lower().endswith(".exe"))
-            btn_launch.setEnabled(can_launch)
-            if not can_launch:
-                btn_launch.setToolTip(
-                    "Los juegos .exe se abren desde Heroic, Steam o Lutris; tras guardar aquí, cierra y vuelve a abrir el juego."
-                )
+            btn_launch.setVisible(can_launch)
             btn_launch.clicked.connect(lambda _=False, r=rule: self._on_launch_rule(r))
             rlay.addWidget(btn_launch)
 
@@ -1049,6 +1070,7 @@ class MangoHudTabWidget(QWidget):
     def _on_rule_enabled(self, idx: int, enabled: bool) -> None:
         if 0 <= idx < len(self._config.window_rules):
             self._config.window_rules[idx].enabled = bool(enabled)
+            self.save_and_apply()
 
     def _on_rule_pos_changed(self, idx: int, pos: str) -> None:
         if 0 <= idx < len(self._config.window_rules):
@@ -1062,6 +1084,7 @@ class MangoHudTabWidget(QWidget):
         if 0 <= idx < len(self._config.window_rules):
             self._config.window_rules.pop(idx)
             self._rebuild_rules_list()
+            self.save_and_apply()
 
     def _on_launch_rule(self, rule: MangoHudWindowRule) -> None:
         cmd = rule.exec_cmd or rule.process_name
@@ -1112,6 +1135,7 @@ class MangoHudTabWidget(QWidget):
             btn.setChecked(k == mode_id)
             btn.blockSignals(False)
         self._preview.set_preview_config(self._config)
+        self.save_and_apply()
 
     def _on_flatpak_toggled(self, checked: bool) -> None:
         if self._syncing:
@@ -1130,6 +1154,7 @@ class MangoHudTabWidget(QWidget):
             return
         self._config = apply_mangohud_preset(self._config, name)
         self._apply_config_to_widgets()
+        self.save_and_apply()
 
     def _on_position_selected(self, pos_key: str) -> None:
         if self._syncing:
@@ -1140,6 +1165,7 @@ class MangoHudTabWidget(QWidget):
             btn.setChecked(k == pos_key)
             btn.blockSignals(False)
         self._preview.set_preview_config(self._config)
+        self.save_and_apply()
 
     def _on_style_changed(self) -> None:
         if self._syncing:

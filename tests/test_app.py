@@ -1979,6 +1979,11 @@ class MangoHudAndOptionalDepsTests(unittest.TestCase):
                 app.processEvents()
 
                 mh_tab = win._mangohud_tab
+                self.assertTrue(mh_tab._advanced_panel.isHidden())
+                mh_tab._adv_toggle_btn.setChecked(True)
+                self.assertFalse(mh_tab._advanced_panel.isHidden())
+                mh_tab._adv_toggle_btn.setChecked(False)
+                self.assertTrue(mh_tab._advanced_panel.isHidden())
                 mh_tab._on_preset_clicked("Sim Racing / Debug")
                 self.assertTrue(mh_tab._config.gpu_power)
                 self.assertTrue(mh_tab._config.cpu_power)

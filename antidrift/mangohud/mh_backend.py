@@ -90,7 +90,7 @@ def mangohud_version() -> str:
         return ""
     try:
         proc = subprocess.run(
-            ["mangohudctl", "--version"] if shutil.which("mangohudctl") else [exe, "--version"],
+            [exe, "--version"],
             capture_output=True,
             text=True,
             timeout=2.0,
