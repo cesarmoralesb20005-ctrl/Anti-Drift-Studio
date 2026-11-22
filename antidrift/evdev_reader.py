@@ -101,6 +101,22 @@ GENERIC_JOY_BUTTON_MAP: dict[int, str] = {
     300: "GUIDE",
 }
 
+DS4_HID_BUTTON_MAP: dict[int, str] = {
+    304: "X",
+    305: "A",
+    306: "B",
+    307: "Y",
+    308: "LB",
+    309: "RB",
+    310: "LB",
+    311: "RB",
+    312: "VIEW",
+    313: "MENU",
+    314: "LS",
+    315: "RS",
+    316: "GUIDE",
+}
+
 ALL_BUTTON_NAMES: tuple[str, ...] = tuple(BUTTON_CODE_MAP.values())
 
 
@@ -137,6 +153,7 @@ class HardwareAxisMap:
     clutch_code: int = -1
     handbrake_code: int = -1
     use_generic_joy_btns: bool = False
+    use_ds4_hid_btns: bool = False
     use_dpad_btns: bool = False
     wheel_use_gear_shifters: bool = False
 
@@ -714,10 +731,40 @@ def probe_hardware_map(fd: int, device_name: str = "") -> HardwareAxisMap:
         hm.rx_code, hm.ry_code = -1, -1
         hm.lt_code, hm.rt_code = -1, -1
 
+        # Thrustmaster T80 PS4 (044f:b668) & DS4 hid-generic wheels expose L2/R2 pedals
+        # on ABS_RX/ABS_RY (0..255, resting near 0) while ABS_Z/ABS_RZ sit idle at ~128.
+        use_rxry_pedals = False
+        if not has_gas and not has_brake and not has_throttle and has_rxry:
+            rx_info = read_abs_info(fd, ABS_RX)
+            ry_info = read_abs_info(fd, ABS_RY)
+            if (
+                rx_info is not None
+                and ry_info is not None
+                and rx_info[1] >= 0
+                and ry_info[1] >= 0
+                and rx_info[2] > rx_info[1]
+                and ry_info[2] > ry_info[1]
+            ):
+                if not (has_z and has_rz):
+                    use_rxry_pedals = True
+                else:
+                    z_info = read_abs_info(fd, ABS_Z)
+                    rz_info = read_abs_info(fd, ABS_RZ)
+                    z_mid = (z_info[1] + z_info[2]) * 0.5 if z_info else 128.0
+                    rz_mid = (rz_info[1] + rz_info[2]) * 0.5 if rz_info else 128.0
+                    rx_rest = rx_info[0] <= rx_info[1] + 12
+                    ry_rest = ry_info[0] <= ry_info[1] + 12
+                    z_center = bool(z_info and abs(z_info[0] - z_mid) <= 16)
+                    rz_center = bool(rz_info and abs(rz_info[0] - rz_mid) <= 16)
+                    if rx_rest and ry_rest and z_center and rz_center:
+                        use_rxry_pedals = True
+
         if has_gas:
             hm.rt_code = ABS_GAS
         elif has_throttle:
             hm.rt_code = ABS_THROTTLE
+        elif use_rxry_pedals:
+            hm.rt_code = ABS_RY
         elif has_rz:
             hm.rt_code = ABS_RZ
         elif has_z and not has_brake:
@@ -725,6 +772,8 @@ def probe_hardware_map(fd: int, device_name: str = "") -> HardwareAxisMap:
 
         if has_brake:
             hm.lt_code = ABS_BRAKE
+        elif use_rxry_pedals:
+            hm.lt_code = ABS_RX
         elif has_z and hm.rt_code != ABS_Z:
             hm.lt_code = ABS_Z
         elif has_rz and hm.rt_code != ABS_RZ:
@@ -732,7 +781,7 @@ def probe_hardware_map(fd: int, device_name: str = "") -> HardwareAxisMap:
         elif has_y and hm.rt_code >= 0 and hm.rt_code != ABS_Y and not has_rxry:
             hm.lt_code = ABS_Y
 
-        if has_y and not (has_gas or has_brake or has_throttle or has_z or has_rz):
+        if has_y and not (has_gas or has_brake or has_throttle or has_z or has_rz or use_rxry_pedals):
             hm.combo_pedal_code = ABS_Y
         elif hm.rt_code >= 0 and hm.lt_code < 0:
             hm.combo_pedal_code = hm.rt_code
@@ -752,6 +801,9 @@ def probe_hardware_map(fd: int, device_name: str = "") -> HardwareAxisMap:
             and not has_rxry
         ):
             hm.clutch_code = ABS_Y
+
+        if _bit_set(key_bits, 304) and _bit_set(key_bits, 306) and _bit_set(key_bits, 309):
+            hm.use_ds4_hid_btns = True
     else:
         if not (has_x and has_y):
             hm.lx_code, hm.ly_code = -1, -1
@@ -973,11 +1025,12 @@ class ControllerReaderThread(QThread):
                 else None
             )
             if name is None:
-                name = (
-                    GENERIC_JOY_BUTTON_MAP.get(ev_code)
-                    if (not is_virtual and hm.use_generic_joy_btns)
-                    else BUTTON_CODE_MAP.get(ev_code)
-                )
+                if not is_virtual and hm.use_ds4_hid_btns:
+                    name = DS4_HID_BUTTON_MAP.get(ev_code)
+                elif not is_virtual and hm.use_generic_joy_btns:
+                    name = GENERIC_JOY_BUTTON_MAP.get(ev_code)
+                else:
+                    name = BUTTON_CODE_MAP.get(ev_code)
             if name is not None:
                 state.buttons[name] = bool(ev_val)
             return
@@ -1319,9 +1372,13 @@ class ControllerReaderThread(QThread):
                         )
                         if state.mode == "direct" or virtual_stalled:
                             btn_map = (
-                                GENERIC_JOY_BUTTON_MAP
-                                if hm.use_generic_joy_btns
-                                else BUTTON_CODE_MAP
+                                DS4_HID_BUTTON_MAP
+                                if hm.use_ds4_hid_btns
+                                else (
+                                    GENERIC_JOY_BUTTON_MAP
+                                    if hm.use_generic_joy_btns
+                                    else BUTTON_CODE_MAP
+                                )
                             )
                             raw_btns = empty_buttons()
                             for code, bname in btn_map.items():

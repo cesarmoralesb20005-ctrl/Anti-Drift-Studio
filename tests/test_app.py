@@ -1242,6 +1242,31 @@ class SteeringWheelTests(unittest.TestCase):
         self.assertEqual(hm_xbox.rt_code, er.ABS_GAS)
         self.assertEqual(er.detect_controller_family("Xbox Wireless Controller", "045e:0b13"), "xbox")
 
+        # Thrustmaster T80 PS4 (044f:b668): ABS_X (128), idle ABS_Z/ABS_RZ (128),
+        # real pedals on ABS_RX/ABS_RY (0..255 resting at 0), and 14 DS4 hid-generic keys (304..317).
+        def _fake_t80_abs(_fd, code):
+            if code in (er.ABS_RX, er.ABS_RY):
+                return (0, 0, 255)
+            return (128, 0, 255)
+
+        with (
+            patch.object(
+                er.fcntl,
+                "ioctl",
+                side_effect=_make_fake_ioctl(
+                    {er.ABS_X, er.ABS_Y, er.ABS_Z, er.ABS_RX, er.ABS_RY, er.ABS_RZ, er.ABS_HAT0X},
+                    set(range(304, 318)),
+                ),
+            ),
+            patch.object(er, "read_abs_info", side_effect=_fake_t80_abs),
+        ):
+            hm_t80 = er.probe_hardware_map(99, "Thrustmaster Thrustmaster T80")
+        self.assertTrue(hm_t80.is_wheel)
+        self.assertEqual(hm_t80.lx_code, er.ABS_X)
+        self.assertEqual(hm_t80.lt_code, er.ABS_RX)
+        self.assertEqual(hm_t80.rt_code, er.ABS_RY)
+        self.assertTrue(hm_t80.use_ds4_hid_btns)
+
     def test_wheel_visualizer_simulator_and_main_window_controls(self) -> None:
         from PySide6.QtCore import QPointF, Qt
         from PySide6.QtGui import QMouseEvent

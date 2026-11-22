@@ -946,6 +946,7 @@ typedef struct {
     int clutch_code;
     int handbrake_code;
     int use_generic_joy_btns;
+    int use_ds4_hid_btns;
     int use_dpad_btns;
     int wheel_use_gear_shifters;
     int has_ff_rumble;
@@ -1024,17 +1025,47 @@ static HardwareMap probe_hardware_map(int src_fd, int src_is_rw) {
         hm.lx_code = has_wheel_axis ? ABS_WHEEL : (has_x ? ABS_X : -1);
         hm.ly_code = -1;
 
+        /* Thrustmaster T80 PS4 (044f:b668) & DS4 hid-generic wheels expose L2/R2 pedals
+         * on ABS_RX/ABS_RY (0..255, resting near 0) while ABS_Z/ABS_RZ sit idle at ~128. */
+        int use_rxry_pedals = 0;
+        if (!has_gas && !has_brake && !has_throttle && has_rxry) {
+            struct input_absinfo rx_info, ry_info;
+            if (ioctl(src_fd, EVIOCGABS(ABS_RX), &rx_info) == 0 &&
+                ioctl(src_fd, EVIOCGABS(ABS_RY), &ry_info) == 0 &&
+                rx_info.minimum >= 0 && ry_info.minimum >= 0 &&
+                rx_info.maximum > rx_info.minimum && ry_info.maximum > ry_info.minimum) {
+                if (!(has_z && has_rz)) {
+                    use_rxry_pedals = 1;
+                } else {
+                    struct input_absinfo z_info, rz_info;
+                    int z_ok = (ioctl(src_fd, EVIOCGABS(ABS_Z), &z_info) == 0);
+                    int rz_ok = (ioctl(src_fd, EVIOCGABS(ABS_RZ), &rz_info) == 0);
+                    int z_mid = z_ok ? ((z_info.minimum + z_info.maximum) / 2) : 128;
+                    int rz_mid = rz_ok ? ((rz_info.minimum + rz_info.maximum) / 2) : 128;
+                    int rx_rest = (rx_info.value <= rx_info.minimum + 12);
+                    int ry_rest = (ry_info.value <= ry_info.minimum + 12);
+                    int z_center = (z_ok && abs(z_info.value - z_mid) <= 16);
+                    int rz_center = (rz_ok && abs(rz_info.value - rz_mid) <= 16);
+                    if (rx_rest && ry_rest && z_center && rz_center) {
+                        use_rxry_pedals = 1;
+                    }
+                }
+            }
+        }
+
         if (has_gas) hm.rt_code = ABS_GAS;
         else if (has_throttle) hm.rt_code = ABS_THROTTLE;
+        else if (use_rxry_pedals) hm.rt_code = ABS_RY;
         else if (has_rz) hm.rt_code = ABS_RZ;
         else if (has_z && !has_brake) hm.rt_code = ABS_Z;
 
         if (has_brake) hm.lt_code = ABS_BRAKE;
+        else if (use_rxry_pedals) hm.lt_code = ABS_RX;
         else if (has_z && hm.rt_code != ABS_Z) hm.lt_code = ABS_Z;
         else if (has_rz && hm.rt_code != ABS_RZ) hm.lt_code = ABS_RZ;
         else if (has_y && hm.rt_code >= 0 && hm.rt_code != ABS_Y && !has_rxry) hm.lt_code = ABS_Y;
 
-        if (has_y && !has_gas && !has_brake && !has_throttle && !has_z && !has_rz) {
+        if (has_y && !has_gas && !has_brake && !has_throttle && !has_z && !has_rz && !use_rxry_pedals) {
             hm.combo_pedal_code = ABS_Y;
         } else if (hm.rt_code >= 0 && hm.lt_code < 0) {
             hm.combo_pedal_code = hm.rt_code;
@@ -1048,6 +1079,9 @@ static HardwareMap probe_hardware_map(int src_fd, int src_is_rw) {
         } else if (has_y && hm.lt_code >= 0 && hm.rt_code >= 0 &&
                    hm.lt_code != ABS_Y && hm.rt_code != ABS_Y && !has_rxry) {
             hm.clutch_code = ABS_Y;
+        }
+        if (bit_is_set(key_bits, 304) && bit_is_set(key_bits, 306) && bit_is_set(key_bits, 309)) {
+            hm.use_ds4_hid_btns = 1;
         }
     } else {
         if (!has_x || !has_y) {
@@ -1090,6 +1124,25 @@ static HardwareMap probe_hardware_map(int src_fd, int src_is_rw) {
     query_abs_bounds(src_fd, hm.handbrake_code, 0, 1023, &hm.handbrake_min, &hm.handbrake_max);
 
     return hm;
+}
+
+static int translate_ds4_hid_button(int code) {
+    switch (code) {
+        case 304: return 307; /* Square -> X */
+        case 305: return 304; /* Cross -> A */
+        case 306: return 305; /* Circle -> B */
+        case 307: return 308; /* Triangle -> Y */
+        case 308: return 310; /* L1 -> LB */
+        case 309: return 311; /* R1 -> RB */
+        case 310: return 310;
+        case 311: return 311;
+        case 312: return 314; /* Share -> VIEW */
+        case 313: return 315; /* Options -> MENU */
+        case 314: return 317; /* L3 -> LS */
+        case 315: return 318; /* R3 -> RS */
+        case 316: return 316; /* PS -> GUIDE */
+        default: return -1;
+    }
 }
 
 static int translate_generic_button(int code) {
@@ -2160,6 +2213,8 @@ static int process_pad_events(PadInstance *pad) {
                 } else if (ev.code == BTN_GEAR_UP) {
                     target_code = (pad_is_wheel_active(pad) && cfg->wheel_shifter_mode != 0)
                         ? cfg->wheel_shifter_up_code : 311;
+                } else if (hm->use_ds4_hid_btns) {
+                    target_code = translate_ds4_hid_button(ev.code);
                 } else if (hm->use_generic_joy_btns) {
                     target_code = translate_generic_button(ev.code);
                 }
