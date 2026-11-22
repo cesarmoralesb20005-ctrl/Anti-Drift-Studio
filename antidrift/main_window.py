@@ -52,7 +52,15 @@ from .config import (
     save_config,
     save_device_config,
 )
-from .deps import DependencyReport, check_dependencies, install_missing_dependencies
+from .deps import (
+    DependencyReport,
+    OptionalDepStatus,
+    check_dependencies,
+    check_optional_dependencies,
+    install_missing_dependencies,
+    install_optional_dependency,
+)
+from .mangohud.mh_tab import MangoHudTabWidget
 from .evdev_reader import (
     ControllerReaderThread,
     ControllerState,
@@ -435,6 +443,19 @@ class _DepsInstallThread(QThread):
     def run(self) -> None:
         ok, msg = install_missing_dependencies(self.progress.emit)
         self.finished_install.emit(ok, msg)
+
+
+class _OptionalDepInstallThread(QThread):
+    progress = Signal(str)
+    finished_install = Signal(str, bool, str)
+
+    def __init__(self, dep_id: str, parent=None) -> None:
+        super().__init__(parent)
+        self._dep_id = dep_id
+
+    def run(self) -> None:
+        ok, msg = install_optional_dependency(self._dep_id, self.progress.emit)
+        self.finished_install.emit(self._dep_id, ok, msg)
 
 
 class _UpdateCheckThread(QThread):
@@ -830,18 +851,26 @@ class MainWindow(QMainWindow):
         self._eq_tab = EqTabWidget(start_background=self._start_reader)
         tabs.addTab(self._eq_tab, "Sonido y EQ")
         eq_idx = tabs.indexOf(self._eq_tab)
+        self._mangohud_tab = MangoHudTabWidget()
+        self._mangohud_tab.dependencies_changed.connect(self._refresh_optional_deps_ui)
+        tabs.addTab(self._mangohud_tab, "MangoHud (HUD)")
+        mh_idx = tabs.indexOf(self._mangohud_tab)
         tabs.addTab(self._build_settings_tab(), "Ajustes")
 
         def _on_tab_changed(idx: int) -> None:
-            prof_bar.setVisible(idx not in (clips_idx, eq_idx))
+            prof_bar.setVisible(idx not in (clips_idx, eq_idx, mh_idx))
             if idx == eq_idx and self._start_reader:
                 self._eq_tab.refresh_audio_devices()
                 self._eq_tab.refresh_app_streams()
+            elif idx == mh_idx:
+                self._mangohud_tab.refresh_installation_status()
+                self._mangohud_tab.refresh_open_windows()
 
         tabs.currentChanged.connect(_on_tab_changed)
         self._main_tabs = tabs
         self._clips_tab_idx = clips_idx
         self._eq_tab_idx = eq_idx
+        self._mh_tab_idx = mh_idx
         w_lay.addWidget(tabs, 1)
         return wrapper
 
@@ -1667,6 +1696,37 @@ class MainWindow(QMainWindow):
         btn_row.addStretch(1)
         h_lay.addLayout(btn_row)
         lay.addWidget(health_card)
+
+        # Card: Optional Dependencies (MangoHud, GameMode, GSR, Vosk)
+        opt_card = QFrame()
+        opt_card.setObjectName("Card")
+        opt_lay = QVBoxLayout(opt_card)
+        opt_lay.setContentsMargins(14, 12, 14, 12)
+        opt_lay.setSpacing(8)
+        opt_hdr = QHBoxLayout()
+        opt_title = QLabel("Dependencias opcionales")
+        opt_title.setObjectName("SectionTitle")
+        self._opt_distro_lbl = QLabel("Distro: detectando...")
+        self._opt_distro_lbl.setObjectName("MutedNote")
+        btn_opt_refresh = QPushButton("↻ Comprobar")
+        btn_opt_refresh.setObjectName("MiniPill")
+        btn_opt_refresh.clicked.connect(self._refresh_optional_deps_ui)
+        opt_hdr.addWidget(opt_title)
+        opt_hdr.addStretch(1)
+        opt_hdr.addWidget(self._opt_distro_lbl)
+        opt_hdr.addWidget(btn_opt_refresh)
+        opt_lay.addLayout(opt_hdr)
+
+        self._opt_deps_rows = QVBoxLayout()
+        self._opt_deps_rows.setSpacing(6)
+        opt_lay.addLayout(self._opt_deps_rows)
+        self._opt_install_msg = QLabel("")
+        self._opt_install_msg.setWordWrap(True)
+        self._opt_install_msg.setObjectName("MutedNote")
+        self._opt_install_msg.setVisible(False)
+        opt_lay.addWidget(self._opt_install_msg)
+        lay.addWidget(opt_card)
+        self._refresh_optional_deps_ui()
 
         # Card: GitHub Update Manager
         upd_card = QFrame()
@@ -2992,6 +3052,83 @@ class MainWindow(QMainWindow):
     def _refresh_logs(self) -> None:
         self._log_view.setPlainText(get_service_logs())
 
+    def _refresh_optional_deps_ui(self) -> None:
+        if not hasattr(self, "_opt_deps_rows"):
+            return
+        while self._opt_deps_rows.count():
+            item = self._opt_deps_rows.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+
+        items: list[OptionalDepStatus] = check_optional_dependencies()
+        if items:
+            d = items[0].distro
+            self._opt_distro_lbl.setText(f"{d.pretty_name} ({d.pkg_manager})")
+
+        for dep in items:
+            row_f = QFrame()
+            row_f.setStyleSheet(
+                "background-color: #0B0E14; border: 1px solid #1E2630; border-radius: 6px;"
+            )
+            rlay = QHBoxLayout(row_f)
+            rlay.setContentsMargins(10, 7, 10, 7)
+            rlay.setSpacing(8)
+
+            txt_col = QVBoxLayout()
+            txt_col.setSpacing(1)
+            nlbl = QLabel(dep.name)
+            nlbl.setStyleSheet("font-weight: 700; color: #F8FAFC; font-size: 12.5px;")
+            dlbl = QLabel(dep.description)
+            dlbl.setObjectName("MutedNote")
+            dlbl.setWordWrap(True)
+            txt_col.addWidget(nlbl)
+            txt_col.addWidget(dlbl)
+            rlay.addLayout(txt_col, 1)
+
+            if dep.installed:
+                st_lbl = QLabel("✓ Instalado")
+                st_lbl.setStyleSheet("color: #34D399; font-weight: 700; font-size: 12px;")
+                rlay.addWidget(st_lbl)
+            else:
+                pkg_hint = ", ".join(dep.packages) if dep.packages else dep.distro.pkg_manager
+                btn = QPushButton(f"Instalar ({pkg_hint})")
+                btn.setObjectName("AccentBtn")
+                btn.setEnabled(
+                    bool(dep.install_cmd) or dep.id in ("vosk", "gsr")
+                )
+                btn.clicked.connect(
+                    lambda _=False, did=dep.id: self._on_install_optional_dep(did)
+                )
+                rlay.addWidget(btn)
+            self._opt_deps_rows.addWidget(row_f)
+
+    def _on_install_optional_dep(self, dep_id: str) -> None:
+        if getattr(self, "_opt_inst_thread", None) is not None:
+            return
+        self._opt_install_msg.setVisible(True)
+        self._opt_install_msg.setText(f"Instalando {dep_id} según tu distribución...")
+        th = _OptionalDepInstallThread(dep_id, self)
+        th.progress.connect(lambda m: self._opt_install_msg.setText(m))
+        th.finished_install.connect(self._on_optional_dep_installed)
+        self._opt_inst_thread = th
+        th.start()
+
+    def _on_optional_dep_installed(self, dep_id: str, ok: bool, msg: str) -> None:
+        self._opt_inst_thread = None
+        self._opt_install_msg.setVisible(True)
+        self._opt_install_msg.setText(msg)
+        self._refresh_optional_deps_ui()
+        if hasattr(self, "_mangohud_tab"):
+            self._mangohud_tab.refresh_installation_status()
+        if hasattr(self, "_clips_tab"):
+            self._clips_tab._refresh_install_hints()
+            self._clips_tab._populate_devices()
+        if ok:
+            self.statusBar().showMessage(msg, 5000)
+        else:
+            QMessageBox.warning(self, f"Instalar {dep_id}", msg)
+
     def _start_deps_check(self) -> None:
         if getattr(self, "_deps_chk_thread", None) is not None:
             return
@@ -3040,6 +3177,9 @@ class MainWindow(QMainWindow):
         if hasattr(self, "_clips_tab"):
             self._clips_tab._refresh_install_hints()
             self._clips_tab._populate_devices()
+        if hasattr(self, "_mangohud_tab"):
+            self._mangohud_tab.refresh_installation_status()
+        self._refresh_optional_deps_ui()
         if ok:
             self.statusBar().showMessage(msg, 5000)
         else:

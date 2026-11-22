@@ -157,6 +157,38 @@ _CAPABILITY_PACKAGES: dict[str, dict[str, list[str]]] = {
     },
 }
 
+OPTIONAL_CAPABILITIES: dict[str, dict[str, list[str]]] = {
+    "mangohud": {
+        "apt": ["mangohud"],
+        "pacman": ["mangohud"],
+        "dnf": ["mangohud"],
+        "zypper": ["mangohud"],
+        "xbps": ["MangoHud"],
+        "apk": ["mangohud"],
+    },
+    "gamemode": {
+        "apt": ["gamemode"],
+        "pacman": ["gamemode"],
+        "dnf": ["gamemode"],
+        "zypper": ["gamemode"],
+        "xbps": ["gamemode"],
+        "apk": ["gamemode"],
+    },
+}
+
+
+@dataclass
+class OptionalDepStatus:
+    """Installation status and distro-aware install command for an optional dependency."""
+
+    id: str
+    name: str
+    description: str
+    installed: bool
+    distro: DistroInfo
+    packages: list[str] = field(default_factory=list)
+    install_cmd: list[str] = field(default_factory=list)
+
 
 def build_distro_install_command(pkgs: list[str], distro: DistroInfo) -> list[str]:
     """Build native non-interactive install argv for the given package manager."""
@@ -200,6 +232,152 @@ def _check_system_pkgs(distro: DistroInfo, caps: list[str]) -> list[str]:
             else:
                 missing.append(pkg)
     return missing
+
+
+def has_mangohud() -> bool:
+    """Return True if MangoHud CLI / wrapper is installed on the system."""
+    return (
+        shutil.which("mangohud") is not None
+        or shutil.which("mangohud.x86_64") is not None
+    )
+
+
+def has_gamemode() -> bool:
+    """Return True if Feral GameMode launcher is installed."""
+    return shutil.which("gamemoderun") is not None
+
+
+def check_optional_dependencies(
+    distro: DistroInfo | None = None,
+) -> list[OptionalDepStatus]:
+    """Return status and native distro install commands for all optional features."""
+    d = distro or detect_distro()
+    mh_pkgs = list(OPTIONAL_CAPABILITIES["mangohud"].get(d.pkg_manager, []))
+    gm_pkgs = list(OPTIONAL_CAPABILITIES["gamemode"].get(d.pkg_manager, []))
+    return [
+        OptionalDepStatus(
+            id="mangohud",
+            name="MangoHud (Overlay FPS/Temps)",
+            description="Muestra FPS, GPU, CPU y frametime sobre juegos o cualquier ventana.",
+            installed=has_mangohud(),
+            distro=d,
+            packages=mh_pkgs,
+            install_cmd=build_distro_install_command(mh_pkgs, d),
+        ),
+        OptionalDepStatus(
+            id="gamemode",
+            name="GameMode (Prioridad CPU)",
+            description="Optimiza gobernador de CPU y prioridad del planificador al jugar.",
+            installed=has_gamemode(),
+            distro=d,
+            packages=gm_pkgs,
+            install_cmd=build_distro_install_command(gm_pkgs, d),
+        ),
+        OptionalDepStatus(
+            id="gsr",
+            name="GPU Screen Recorder (Clips)",
+            description="Motor de grabación en segundo plano para capturar clips instantáneos.",
+            installed=_has_gsr(),
+            distro=d,
+            packages=[GSR_FLATPAK_ID],
+            install_cmd=["flatpak", "install", "--user", "-y", "flathub", GSR_FLATPAK_ID]
+            if shutil.which("flatpak")
+            else [],
+        ),
+        OptionalDepStatus(
+            id="vosk",
+            name="Modelo de voz offline (Vosk ES)",
+            description="Reconocimiento de voz sin internet para guardar clips diciendo una frase.",
+            installed=_has_vosk_model(),
+            distro=d,
+            packages=[VOSK_MODEL_NAME],
+            install_cmd=[],
+        ),
+    ]
+
+
+def _install_gsr_flatpak(log: Callable[[str], None]) -> bool:
+    if not shutil.which("flatpak"):
+        log("Aviso: 'flatpak' no encontrado para GPU Screen Recorder.")
+        return False
+    log("Instalando GPU Screen Recorder (Flatpak usuario)...")
+    subprocess.run(
+        [
+            "flatpak",
+            "remote-add",
+            "--user",
+            "--if-not-exists",
+            "flathub",
+            "https://dl.flathub.org/repo/flathub.flatpakrepo",
+        ],
+        capture_output=True,
+        check=False,
+    )
+    proc = subprocess.run(
+        ["flatpak", "install", "--user", "-y", "flathub", GSR_FLATPAK_ID],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        log(f"Aviso Flatpak: {proc.stderr.strip()}")
+        return False
+    return True
+
+
+def _install_vosk_model(log: Callable[[str], None]) -> bool:
+    MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    zip_path = MODELS_DIR / f"{VOSK_MODEL_NAME}.zip"
+    log("Descargando modelo de voz offline (~38 MB)...")
+    try:
+        with urllib.request.urlopen(VOSK_MODEL_URL, timeout=60) as resp:
+            with zip_path.open("wb") as out:
+                shutil.copyfileobj(resp, out)
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            zf.extractall(MODELS_DIR)
+        zip_path.unlink(missing_ok=True)
+        return True
+    except Exception as exc:
+        zip_path.unlink(missing_ok=True)
+        log(f"Aviso modelo de voz: {exc}")
+        return False
+
+
+def install_optional_dependency(
+    dep_id: str,
+    log_cb: Callable[[str], None] | None = None,
+) -> tuple[bool, str]:
+    """Install a single optional dependency using the detected Linux distro package manager."""
+    log = log_cb or (lambda _m: None)
+    distro = detect_distro()
+    if dep_id in OPTIONAL_CAPABILITIES:
+        pkgs = list(OPTIONAL_CAPABILITIES[dep_id].get(distro.pkg_manager, []))
+        cmd = build_distro_install_command(pkgs, distro)
+        if not cmd:
+            return (
+                False,
+                f"No hay instalador automático para '{dep_id}' en {distro.pretty_name}.",
+            )
+        if distro.pkg_manager == "apt":
+            if not _run_elevated(["apt-get", "update"], log):
+                return False, "No se pudo actualizar apt (se canceló o falló permisos)."
+        if not _run_elevated(cmd, log):
+            return False, f"No se pudo instalar {', '.join(pkgs)}."
+        return True, f"{dep_id} instalado correctamente en {distro.pretty_name}."
+
+    if dep_id == "gsr":
+        if _has_gsr():
+            return True, "GPU Screen Recorder ya está instalado."
+        ok = _install_gsr_flatpak(log)
+        return (ok, "GPU Screen Recorder instalado." if ok else "No se pudo instalar GSR (requiere Flatpak).")
+
+    if dep_id == "vosk":
+        if _has_vosk_model():
+            return True, "El modelo de voz ya está instalado."
+        ok = _install_vosk_model(log)
+        return (ok, "Modelo de voz descargado." if ok else "No se pudo descargar el modelo de voz.")
+
+    return False, f"Dependencia opcional desconocida: {dep_id}"
 
 
 def _has_gsr() -> bool:
@@ -367,45 +545,10 @@ def install_missing_dependencies(
             return False, f"Error compilando servicio C: {proc.stderr.strip()}"
 
     if rep.missing_gsr and not _has_gsr():
-        if shutil.which("flatpak"):
-            log("Instalando GPU Screen Recorder (Flatpak usuario)...")
-            subprocess.run(
-                [
-                    "flatpak",
-                    "remote-add",
-                    "--user",
-                    "--if-not-exists",
-                    "flathub",
-                    "https://dl.flathub.org/repo/flathub.flatpakrepo",
-                ],
-                capture_output=True,
-                check=False,
-            )
-            proc = subprocess.run(
-                ["flatpak", "install", "--user", "-y", "flathub", GSR_FLATPAK_ID],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            if proc.returncode != 0:
-                log(f"Aviso Flatpak: {proc.stderr.strip()}")
-        else:
-            log("Aviso: 'flatpak' no encontrado para GPU Screen Recorder.")
+        _install_gsr_flatpak(log)
 
     if rep.missing_vosk_model and not _has_vosk_model():
-        MODELS_DIR.mkdir(parents=True, exist_ok=True)
-        zip_path = MODELS_DIR / f"{VOSK_MODEL_NAME}.zip"
-        log("Descargando modelo de voz offline (~38 MB)...")
-        try:
-            with urllib.request.urlopen(VOSK_MODEL_URL, timeout=60) as resp:
-                with zip_path.open("wb") as out:
-                    shutil.copyfileobj(resp, out)
-            with zipfile.ZipFile(zip_path, "r") as zf:
-                zf.extractall(MODELS_DIR)
-            zip_path.unlink(missing_ok=True)
-        except Exception as exc:
-            zip_path.unlink(missing_ok=True)
-            log(f"Aviso modelo de voz: {exc}")
+        _install_vosk_model(log)
 
     final = check_dependencies()
     if final.all_ok:

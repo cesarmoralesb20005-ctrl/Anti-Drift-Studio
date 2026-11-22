@@ -1838,5 +1838,167 @@ class EqualizerSubsystemTests(unittest.TestCase):
                     os.environ["XDG_CONFIG_HOME"] = old_xdg
 
 
+class MangoHudAndOptionalDepsTests(unittest.TestCase):
+    def test_optional_deps_distro_commands_and_installer(self) -> None:
+        from unittest import mock
+        from antidrift.deps import (
+            DistroInfo,
+            check_optional_dependencies,
+            install_optional_dependency,
+        )
+
+        for mgr, expected_pkg in (
+            ("apt", "mangohud"),
+            ("pacman", "mangohud"),
+            ("dnf", "mangohud"),
+            ("zypper", "mangohud"),
+            ("xbps", "MangoHud"),
+            ("apk", "mangohud"),
+        ):
+            items = {
+                d.id: d
+                for d in check_optional_dependencies(DistroInfo(mgr, f"Test {mgr}", mgr))
+            }
+            self.assertIn("mangohud", items)
+            self.assertIn(expected_pkg, items["mangohud"].packages)
+            self.assertIn(expected_pkg, items["mangohud"].install_cmd)
+
+        ran_cmds: list[list[str]] = []
+
+        def _fake_elev(cmd, _log):
+            ran_cmds.append(cmd)
+            return True
+
+        with (
+            mock.patch(
+                "antidrift.deps.detect_distro",
+                return_value=DistroInfo("arch", "Arch Linux", "pacman"),
+            ),
+            mock.patch("antidrift.deps._run_elevated", side_effect=_fake_elev),
+        ):
+            ok, _msg = install_optional_dependency("mangohud")
+        self.assertTrue(ok)
+        self.assertEqual(ran_cmds, [["pacman", "-S", "--needed", "--noconfirm", "mangohud"]])
+
+    def test_mangohud_config_sync_and_process_resolution(self) -> None:
+        from antidrift.mangohud.mh_backend import (
+            extract_process_name_from_cmdline,
+            sync_mangohud_system_files,
+        )
+        from antidrift.mangohud.mh_config import (
+            MangoHudConfig,
+            MangoHudWindowRule,
+            apply_mangohud_preset,
+            load_mangohud_app_config,
+            render_mangohud_conf,
+            save_mangohud_app_config,
+        )
+
+        self.assertEqual(
+            extract_process_name_from_cmdline(["S:\\Games\\fh2\\azimuth.exe", "--game=fh2"], "/usr/bin/wine64-preloader"),
+            "azimuth.exe",
+        )
+        self.assertEqual(
+            extract_process_name_from_cmdline(["/usr/bin/vkcube"], "/usr/bin/vkcube"),
+            "vkcube",
+        )
+
+        cfg = apply_mangohud_preset(MangoHudConfig(), "Barra Horizontal")
+        self.assertTrue(cfg.horizontal)
+        self.assertTrue(cfg.fps)
+        cfg.session_mode = "selective"
+        cfg.fps_limit = 60
+        cfg.window_rules = [
+            MangoHudWindowRule(
+                id="r1",
+                title="Forza Horizon 2",
+                process_name="azimuth.exe",
+                enabled=True,
+                override_position="top-right",
+                override_fps_limit=60,
+            ),
+            MangoHudWindowRule(
+                id="r2",
+                title="Desactivado",
+                process_name="glxgears",
+                enabled=False,
+            ),
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            app_json = root / "mh.json"
+            mh_dir = root / "MangoHud"
+            env_file = root / "env" / "xbox-antidrift-mangohud.conf"
+
+            save_mangohud_app_config(cfg, app_json)
+            loaded = load_mangohud_app_config(app_json)
+            self.assertEqual(loaded.session_mode, "selective")
+            self.assertEqual(len(loaded.window_rules), 2)
+            self.assertEqual(loaded.window_rules[0].override_position, "top-right")
+
+            sync_mangohud_system_files(loaded, mh_dir=mh_dir, env_file=env_file)
+            main_txt = (mh_dir / "MangoHud.conf").read_text(encoding="utf-8")
+            az_txt = (mh_dir / "azimuth.exe.conf").read_text(encoding="utf-8")
+            self.assertIn("no_display\n", main_txt)
+            self.assertIn("no_display=0\n", az_txt)
+            self.assertIn("position=top-right\n", az_txt)
+            self.assertIn("fps_limit=60\n", az_txt)
+            self.assertFalse((mh_dir / "glxgears.conf").exists())
+            self.assertEqual(env_file.read_text(encoding="utf-8"), "MANGOHUD=1\n")
+
+            # Removing/disabling a managed rule cleans up its managed .conf file
+            loaded.window_rules[0].enabled = False
+            loaded.session_mode = "off"
+            sync_mangohud_system_files(loaded, mh_dir=mh_dir, env_file=env_file)
+            self.assertFalse((mh_dir / "azimuth.exe.conf").exists())
+            self.assertFalse(env_file.exists())
+
+            rendered = render_mangohud_conf(apply_mangohud_preset(MangoHudConfig(), "Sim Racing / Debug"))
+            self.assertIn("gpu_power", rendered)
+            self.assertIn("cpu_power", rendered)
+
+    def test_mangohud_tab_ui_and_main_window_integration(self) -> None:
+        from PySide6.QtCore import QSize
+        from PySide6.QtGui import QImage
+        from PySide6.QtWidgets import QApplication
+        from antidrift.main_window import MainWindow
+
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as tmp:
+            old_xdg = os.environ.get("XDG_CONFIG_HOME")
+            os.environ["XDG_CONFIG_HOME"] = tmp
+            try:
+                win = MainWindow(start_reader=False, enable_tray=False)
+                win.resize(1180, 770)
+                win._main_tabs.setCurrentIndex(win._mh_tab_idx)
+                app.processEvents()
+
+                mh_tab = win._mangohud_tab
+                mh_tab._on_preset_clicked("Sim Racing / Debug")
+                self.assertTrue(mh_tab._config.gpu_power)
+                self.assertTrue(mh_tab._config.cpu_power)
+
+                mh_tab._on_position_selected("bottom-right")
+                self.assertEqual(mh_tab._config.position, "bottom-right")
+
+                mh_tab._add_or_enable_rule("Forza Horizon 2", "azimuth.exe", "")
+                self.assertEqual(len(mh_tab._config.window_rules), 1)
+                self.assertEqual(mh_tab._rules_container.count(), 1)
+                mh_tab.save_and_apply()
+                self.assertTrue((Path(tmp) / "MangoHud" / "azimuth.exe.conf").exists())
+
+                img = QImage(QSize(1180, 770), QImage.Format_ARGB32)
+                win.render(img)
+                self.assertFalse(img.isNull())
+                self.assertGreater(win._opt_deps_rows.count(), 0)
+                win.close()
+            finally:
+                if old_xdg is None:
+                    os.environ.pop("XDG_CONFIG_HOME", None)
+                else:
+                    os.environ["XDG_CONFIG_HOME"] = old_xdg
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
