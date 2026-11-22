@@ -1985,6 +1985,12 @@ class MangoHudAndOptionalDepsTests(unittest.TestCase):
 
                 mh_tab._on_position_selected("bottom-right")
                 self.assertEqual(mh_tab._config.position, "bottom-right")
+                mh_tab._preview._on_tick()
+                lines_preview = mh_tab._preview._hud_lines()
+                self.assertTrue(any(k == "GPU" for k, _, _ in lines_preview))
+                self.assertTrue(any(k == "GAMEMODE" for k, _, _ in lines_preview))
+                self.assertTrue(any(k == "HORA" for k, _, _ in lines_preview))
+                mh_tab._preview.hide()
 
                 mh_tab._add_or_enable_rule("Forza Horizon 2", "azimuth.exe", "")
                 self.assertEqual(len(mh_tab._config.window_rules), 1)

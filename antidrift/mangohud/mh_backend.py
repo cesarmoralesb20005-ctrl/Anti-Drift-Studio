@@ -9,6 +9,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -620,3 +621,235 @@ def launch_demo_window_with_mangohud(cfg: MangoHudConfig) -> tuple[bool, str]:
         return launch_command_with_mangohud("glxgears", cfg)
     demo_cmd = f"{shlex.quote(sys.executable)} -m antidrift.mangohud.demo_window"
     return launch_command_with_mangohud(demo_cmd, cfg)
+
+
+@dataclass
+class LiveSystemTelemetry:
+    """Real-time local hardware telemetry snapshot for MangoHud live preview."""
+
+    gpu_name: str = "GPU Linux"
+    gpu_percent: int | None = None
+    gpu_temp_c: int | None = None
+    gpu_core_mhz: int | None = None
+    gpu_mem_mhz: int | None = None
+    gpu_power_w: int | None = None
+    vram_used_gb: float | None = None
+    cpu_percent: int = 0
+    cpu_temp_c: int | None = None
+    cpu_ghz: float | None = None
+    cpu_power_w: int | None = None
+    ram_used_gb: float = 0.0
+    swap_used_gb: float = 0.0
+    io_read_mbs: float = 0.0
+    io_write_mbs: float = 0.0
+    gamemode_active: bool = False
+    clock_str: str = ""
+
+
+def _read_int(path: Path) -> int | None:
+    try:
+        return int(path.read_text(encoding="utf-8", errors="replace").strip())
+    except (OSError, ValueError):
+        return None
+
+
+def _read_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return ""
+
+
+class LiveTelemetrySampler:
+    """Fast /proc & /sys telemetry sampler (zero subprocess overhead)."""
+
+    def __init__(self) -> None:
+        self._prev_cpu_total = 0
+        self._prev_cpu_idle = 0
+        self._prev_io_ts = 0.0
+        self._prev_read_sectors = 0
+        self._prev_write_sectors = 0
+        self._gpu_card_dir: Path | None = None
+        self._gpu_hwmon_dir: Path | None = None
+        self._cpu_hwmon_dir: Path | None = None
+        self._gpu_name: str = self._detect_gpu_name()
+        self._discover_hwmon()
+
+    def _detect_gpu_name(self) -> str:
+        drm = Path("/sys/class/drm")
+        if drm.exists():
+            for card in sorted(drm.glob("card[0-9]")):
+                dev = card / "device"
+                if (dev / "gpu_busy_percent").exists() or (dev / "mem_info_vram_used").exists():
+                    self._gpu_card_dir = dev
+                    hm_root = dev / "hwmon"
+                    if hm_root.exists():
+                        for hm in sorted(hm_root.glob("hwmon*")):
+                            self._gpu_hwmon_dir = hm
+                            break
+                    vendor = _read_text(dev / "vendor").lower()
+                    if vendor == "0x1002":
+                        return "AMD Radeon"
+                    if vendor == "0x10de":
+                        return "NVIDIA GPU"
+                    if vendor == "0x8086":
+                        return "Intel GPU"
+                    break
+        return "GPU Vulkan"
+
+    def _discover_hwmon(self) -> None:
+        hwroot = Path("/sys/class/hwmon")
+        if not hwroot.exists():
+            return
+        for hm in sorted(hwroot.glob("hwmon*")):
+            name = _read_text(hm / "name").lower()
+            if name in ("amdgpu", "radeon", "nouveau") and self._gpu_hwmon_dir is None:
+                self._gpu_hwmon_dir = hm
+            elif name in ("k10temp", "zenpower", "coretemp", "cpu_thermal") and self._cpu_hwmon_dir is None:
+                self._cpu_hwmon_dir = hm
+
+    def _sample_cpu_percent(self) -> int:
+        try:
+            line = Path("/proc/stat").read_text(encoding="utf-8", errors="replace").splitlines()[0]
+        except (OSError, IndexError):
+            return 0
+        parts = line.split()
+        if len(parts) < 5 or parts[0] != "cpu":
+            return 0
+        vals = [int(x) for x in parts[1:] if x.isdigit()]
+        total = sum(vals)
+        idle = vals[3] + (vals[4] if len(vals) > 4 else 0)
+        if self._prev_cpu_total <= 0 or total <= self._prev_cpu_total:
+            self._prev_cpu_total = total
+            self._prev_cpu_idle = idle
+            return 0
+        dt = total - self._prev_cpu_total
+        di = idle - self._prev_cpu_idle
+        self._prev_cpu_total = total
+        self._prev_cpu_idle = idle
+        return max(0, min(100, round(((dt - di) / max(1, dt)) * 100.0)))
+
+    def _sample_cpu_ghz(self) -> float | None:
+        freqs: list[int] = []
+        cpufreq_root = Path("/sys/devices/system/cpu/cpufreq")
+        if cpufreq_root.exists():
+            for p in sorted(cpufreq_root.glob("policy*/scaling_cur_freq"))[:8]:
+                val = _read_int(p)
+                if val and val > 0:
+                    freqs.append(val)
+        if freqs:
+            return round((sum(freqs) / len(freqs)) / 1_000_000.0, 2)
+        try:
+            for line in Path("/proc/cpuinfo").read_text(encoding="utf-8", errors="replace").splitlines():
+                if line.startswith("cpu MHz"):
+                    mhz = float(line.split(":", 1)[1].strip())
+                    return round(mhz / 1000.0, 2)
+        except (OSError, ValueError):
+            pass
+        return None
+
+    def _sample_mem(self) -> tuple[float, float]:
+        info: dict[str, int] = {}
+        try:
+            for line in Path("/proc/meminfo").read_text(encoding="utf-8", errors="replace").splitlines():
+                if ":" not in line:
+                    continue
+                k, rest = line.split(":", 1)
+                num = rest.strip().split()[0]
+                if num.isdigit():
+                    info[k] = int(num)
+        except OSError:
+            return 0.0, 0.0
+        mem_total = info.get("MemTotal", 0)
+        mem_avail = info.get("MemAvailable", info.get("MemFree", 0))
+        swap_total = info.get("SwapTotal", 0)
+        swap_free = info.get("SwapFree", 0)
+        ram_gb = max(0.0, (mem_total - mem_avail) / (1024.0 * 1024.0))
+        swap_gb = max(0.0, (swap_total - swap_free) / (1024.0 * 1024.0))
+        return round(ram_gb, 1), round(swap_gb, 1)
+
+    def _sample_disk_io(self) -> tuple[float, float]:
+        now = time.monotonic()
+        r_sec = 0
+        w_sec = 0
+        try:
+            for line in Path("/proc/diskstats").read_text(encoding="utf-8", errors="replace").splitlines():
+                cols = line.split()
+                if len(cols) < 10:
+                    continue
+                dev = cols[2]
+                if re.match(r"^(sd[a-z]+|nvme\d+n\d+)$", dev):
+                    r_sec += int(cols[5])
+                    w_sec += int(cols[9])
+        except (OSError, ValueError):
+            return 0.0, 0.0
+        if self._prev_io_ts <= 0.0 or now <= self._prev_io_ts:
+            self._prev_io_ts = now
+            self._prev_read_sectors = r_sec
+            self._prev_write_sectors = w_sec
+            return 0.0, 0.0
+        dt = now - self._prev_io_ts
+        rmb = max(0.0, ((r_sec - self._prev_read_sectors) * 512.0) / (1024.0 * 1024.0 * dt))
+        wmb = max(0.0, ((w_sec - self._prev_write_sectors) * 512.0) / (1024.0 * 1024.0 * dt))
+        self._prev_io_ts = now
+        self._prev_read_sectors = r_sec
+        self._prev_write_sectors = w_sec
+        return round(rmb, 1), round(wmb, 1)
+
+    def _sample_gamemode_active(self) -> bool:
+        try:
+            proc = subprocess.run(["gamemoded", "-s"], capture_output=True, text=True, timeout=0.25, check=False)
+            return "active" in proc.stdout.lower() and "inactive" not in proc.stdout.lower()
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+
+    def sample(self, check_gamemode: bool = False) -> LiveSystemTelemetry:
+        gpu_pct = _read_int(self._gpu_card_dir / "gpu_busy_percent") if self._gpu_card_dir else None
+        vram_bytes = _read_int(self._gpu_card_dir / "mem_info_vram_used") if self._gpu_card_dir else None
+        vram_gb = round(vram_bytes / (1024.0**3), 1) if vram_bytes is not None else None
+
+        gpu_temp = None
+        gpu_core_mhz = None
+        gpu_mem_mhz = None
+        gpu_power = None
+        if self._gpu_hwmon_dir:
+            t_mc = _read_int(self._gpu_hwmon_dir / "temp1_input")
+            if t_mc is not None:
+                gpu_temp = round(t_mc / 1000.0)
+            f1 = _read_int(self._gpu_hwmon_dir / "freq1_input")
+            if f1 is not None:
+                gpu_core_mhz = round(f1 / 1_000_000.0)
+            f2 = _read_int(self._gpu_hwmon_dir / "freq2_input")
+            if f2 is not None:
+                gpu_mem_mhz = round(f2 / 1_000_000.0)
+            pw = _read_int(self._gpu_hwmon_dir / "power1_average") or _read_int(self._gpu_hwmon_dir / "power1_input")
+            if pw is not None:
+                gpu_power = round(pw / 1_000_000.0)
+
+        cpu_temp = None
+        if self._cpu_hwmon_dir:
+            ct = _read_int(self._cpu_hwmon_dir / "temp1_input")
+            if ct is not None:
+                cpu_temp = round(ct / 1000.0)
+
+        ram_gb, swap_gb = self._sample_mem()
+        r_mbs, w_mbs = self._sample_disk_io()
+        return LiveSystemTelemetry(
+            gpu_name=self._gpu_name,
+            gpu_percent=gpu_pct,
+            gpu_temp_c=gpu_temp,
+            gpu_core_mhz=gpu_core_mhz,
+            gpu_mem_mhz=gpu_mem_mhz,
+            gpu_power_w=gpu_power,
+            vram_used_gb=vram_gb,
+            cpu_percent=self._sample_cpu_percent(),
+            cpu_temp_c=cpu_temp,
+            cpu_ghz=self._sample_cpu_ghz(),
+            cpu_power_w=None,
+            ram_used_gb=ram_gb,
+            swap_used_gb=swap_gb,
+            io_read_mbs=r_mbs,
+            io_write_mbs=w_mbs,
+            gamemode_active=self._sample_gamemode_active() if check_gamemode else False,
+            clock_str=time.strftime("%H:%M:%S"),
+        )

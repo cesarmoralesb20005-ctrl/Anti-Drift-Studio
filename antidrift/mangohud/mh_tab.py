@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, QThread, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QPainter, QPen
+import math
+from collections import deque
+
+from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, QThread, QTimer, Qt, Signal
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -32,6 +35,8 @@ from ..widgets.fit_scroll import FitWidthScrollArea
 from .mh_backend import (
     DesktopAppInfo,
     DetectedWindow,
+    LiveSystemTelemetry,
+    LiveTelemetrySampler,
     discover_open_windows,
     launch_command_with_mangohud,
     launch_demo_window_with_mangohud,
@@ -132,64 +137,125 @@ class _WindowPickThread(QThread):
 
 
 class MangoHudPreviewWidget(QWidget):
-    """Compact live visual mockup of the MangoHud overlay inside a game viewport."""
+    """Live hardware-backed preview of the MangoHud overlay inside an animated viewport."""
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
-        self.setMinimumSize(300, 185)
-        self.setMaximumHeight(210)
+        self.setMinimumSize(340, 225)
+        self.setMaximumHeight(265)
         self._cfg = MangoHudConfig()
+        self._sampler = LiveTelemetrySampler()
+        self._telemetry: LiveSystemTelemetry = self._sampler.sample(check_gamemode=False)
+        self._tick = 0
+        self._frametimes: deque[float] = deque([16.6] * 24, maxlen=24)
+        self._last_fps = 60
+        self._live_gamemode = False
+        self._timer = QTimer(self)
+        self._timer.setInterval(450)
+        self._timer.timeout.connect(self._on_tick)
+
+    def showEvent(self, event) -> None:  # type: ignore[override]
+        super().showEvent(event)
+        if not self._timer.isActive():
+            self._on_tick()
+            self._timer.start()
+
+    def hideEvent(self, event) -> None:  # type: ignore[override]
+        self._timer.stop()
+        super().hideEvent(event)
 
     def set_preview_config(self, cfg: MangoHudConfig) -> None:
         self._cfg = cfg.copy()
         self.update()
 
+    def _on_tick(self) -> None:
+        self._tick += 1
+        check_gm = self._cfg.gamemode and (self._tick % 6 == 1)
+        snap = self._sampler.sample(check_gamemode=check_gm)
+        if check_gm:
+            self._live_gamemode = snap.gamemode_active
+        self._telemetry = snap
+
+        lim = self._cfg.fps_limit
+        base_fps = min(360, lim) if lim > 0 else 60
+        if lim > 0:
+            jitter = int(round(math.sin(self._tick * 0.9) * (0 if lim <= 30 else 1)))
+        else:
+            jitter = int(round(math.sin(self._tick * 0.7) * 2 + math.cos(self._tick * 1.3)))
+        cur_fps = max(1, min(lim if lim > 0 else 240, base_fps + jitter))
+        self._last_fps = cur_fps
+        ft = round(1000.0 / float(cur_fps), 1)
+        self._frametimes.append(ft)
+        self.update()
+
     def _hud_lines(self) -> list[tuple[str, str, QColor]]:
         c = self._cfg
+        t = self._telemetry
         rows: list[tuple[str, str, QColor]] = []
+
         if c.gpu_name:
-            rows.append(("GPU", "RX 580 2048SP", QColor("#10B981")))
-        if c.gpu_stats or c.gpu_temp or c.gpu_core_clock or c.gpu_power:
-            parts = []
+            rows.append(("GPU", t.gpu_name, QColor("#10B981")))
+        if c.gpu_stats or c.gpu_temp or c.gpu_core_clock or c.gpu_mem_clock or c.gpu_power:
+            parts: list[str] = []
             if c.gpu_stats:
-                parts.append("78%")
+                parts.append(f"{t.gpu_percent if t.gpu_percent is not None else '--'}%")
             if c.gpu_temp:
-                parts.append("63°C")
-            if c.gpu_core_clock:
-                parts.append("1150MHz")
-            if c.gpu_power:
-                parts.append("118W")
-            rows.append(("GPU", "  ".join(parts), QColor("#34D399")))
+                parts.append(f"{t.gpu_temp_c if t.gpu_temp_c is not None else '--'}°C")
+            if c.gpu_core_clock and t.gpu_core_mhz is not None:
+                parts.append(f"{t.gpu_core_mhz}MHz")
+            if c.gpu_mem_clock and t.gpu_mem_mhz is not None:
+                parts.append(f"M{t.gpu_mem_mhz}")
+            if c.gpu_power and t.gpu_power_w is not None:
+                parts.append(f"{t.gpu_power_w}W")
+            if parts:
+                rows.append(("GPU", " ".join(parts), QColor("#34D399")))
         if c.vram:
-            rows.append(("VRAM", "2.4 GB", QColor("#38BDF8")))
-        if c.cpu_stats or c.cpu_temp or c.cpu_mhz or c.cpu_power:
+            vram_txt = f"{t.vram_used_gb:.1f} GB" if t.vram_used_gb is not None else "-- GB"
+            rows.append(("VRAM", vram_txt, QColor("#38BDF8")))
+        if c.cpu_stats or c.cpu_temp or c.cpu_mhz or c.cpu_power or c.core_load:
             parts = []
-            if c.cpu_stats:
-                parts.append("46%")
-            if c.cpu_temp:
-                parts.append("54°C")
-            if c.cpu_mhz:
-                parts.append("4.34GHz")
+            if c.cpu_stats or c.core_load:
+                parts.append(f"{t.cpu_percent}%")
+            if c.cpu_temp and t.cpu_temp_c is not None:
+                parts.append(f"{t.cpu_temp_c}°C")
+            if c.cpu_mhz and t.cpu_ghz is not None:
+                parts.append(f"{t.cpu_ghz:.2f}GHz")
             if c.cpu_power:
-                parts.append("42W")
-            rows.append(("CPU", "  ".join(parts), QColor("#F59E0B")))
-        if c.ram:
-            rows.append(("RAM", "8.6 GB" + (" | SW 0.9" if c.swap else ""), QColor("#E2E8F0")))
+                parts.append("CPU")
+            if parts:
+                rows.append(("CPU", " ".join(parts), QColor("#F59E0B")))
+        if c.ram or c.swap:
+            ram_str = f"{t.ram_used_gb:.1f} GB" if c.ram else ""
+            sw_str = f"SW {t.swap_used_gb:.1f}G" if c.swap else ""
+            val = " | ".join(s for s in (ram_str, sw_str) if s)
+            rows.append(("RAM" if c.ram else "SWAP", val, QColor("#E2E8F0")))
+        if c.io_stats:
+            rows.append(("I/O", f"R{t.io_read_mbs:.1f} W{t.io_write_mbs:.1f}MB/s", QColor("#60A5FA")))
         if c.fps:
-            fps_val = f"{min(60, c.fps_limit) if c.fps_limit > 0 else 60} FPS"
-            extra = "  16.6ms" if c.frame_timing else ""
+            cur_ft = self._frametimes[-1] if self._frametimes else 16.6
+            low1 = max(1, self._last_fps - max(2, round(self._last_fps * 0.08)))
+            fps_val = f"{self._last_fps}"
+            if c.show_fps_limit and c.fps_limit > 0:
+                fps_val += f"/{c.fps_limit}"
+            fps_val += " FPS"
+            if c.frame_timing:
+                fps_val += f"  {cur_ft:.1f}ms"
             if c.fps_metrics:
-                extra += "  1% 56"
-            rows.append(("FPS", f"{fps_val}{extra}", QColor("#F8FAFC")))
+                fps_val += f"  1% {low1}"
+            rows.append(("FPS", fps_val, QColor("#F8FAFC")))
+        if c.vulkan_driver:
+            rows.append(("DRIVER", "Mesa RADV", QColor("#38BDF8")))
         if c.wine:
-            rows.append(("PROTON", "DW-11.0", QColor("#A78BFA")))
+            rows.append(("PROTON", "Wine/Proton", QColor("#A78BFA")))
         if c.resolution:
             rows.append(("RES", "1920x1080", QColor("#94A3B8")))
         if c.gamemode:
-            rows.append(("GAMEMODE", "ON", QColor("#10B981")))
+            rows.append(("GAMEMODE", "ON" if self._live_gamemode else "LISTO", QColor("#10B981")))
+        if c.time:
+            rows.append(("HORA", t.clock_str or "--:--:--", QColor("#CBD5E1")))
         if not rows:
             rows.append(("HUD", "Sin métricas", QColor("#94A3B8")))
-        return rows[: (5 if c.horizontal else 8)]
+        return rows[: (5 if c.horizontal else 12)]
 
     def paintEvent(self, _event) -> None:
         p = QPainter(self)
@@ -201,87 +267,135 @@ class MangoHudPreviewWidget(QWidget):
         p.setBrush(QColor("#0A0D12"))
         p.drawRoundedRect(outer, 10, 10)
 
-        # Subtle viewport horizon grid decoration
-        p.setPen(QPen(QColor(255, 255, 255, 16), 1.0))
-        p.drawLine(QPointF(outer.left() + 12, outer.center().y()), QPointF(outer.right() - 12, outer.center().y()))
-        p.drawEllipse(outer.center(), 36.0, 22.0)
+        footer_h = 20.0
+        viewport = outer.adjusted(0, 0, 0, -footer_h)
 
-        p.setPen(QColor("#475569"))
+        # Animated subtle radar / viewport backdrop so preview is clearly live
+        cx, cy = viewport.center().x(), viewport.center().y()
+        p.setPen(QPen(QColor(255, 255, 255, 14), 1.0))
+        p.drawLine(QPointF(viewport.left() + 12, cy), QPointF(viewport.right() - 12, cy))
+        p.drawLine(QPointF(cx, viewport.top() + 10), QPointF(cx, viewport.bottom() - 10))
+        p.drawEllipse(QPointF(cx, cy), 40.0, 24.0)
+
+        angle = (self._tick * 0.42) % (2.0 * math.pi)
+        dot_x = cx + math.cos(angle) * 34.0
+        dot_y = cy + math.sin(angle) * 18.0
+        p.setPen(QPen(QColor(16, 185, 129, 75), 1.2))
+        p.drawLine(QPointF(cx, cy), QPointF(dot_x, dot_y))
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(16, 185, 129, 140))
+        p.drawEllipse(QPointF(dot_x, dot_y), 3.0, 3.0)
+
+        # Bottom live telemetry status strip (never overlaps HUD box)
+        pulse_alpha = 230 if (self._tick % 2 == 0) else 120
+        p.setBrush(QColor(16, 185, 129, pulse_alpha))
+        p.drawEllipse(QPointF(outer.left() + 14.0, outer.bottom() - 10.0), 3.2, 3.2)
+        p.setPen(QColor("#64748B"))
         p.setFont(QFont("JetBrains Mono", 8))
         mode_tag = {
             "off": "MODO MANUAL",
             "selective": "SELECTIVO (MIS VENTANAS)",
             "global": "GLOBAL (TODO 3D)",
         }.get(self._cfg.session_mode, "")
-        p.drawText(outer.adjusted(10, 6, -10, -6), Qt.AlignBottom | Qt.AlignHCenter, f"Vista previa · {mode_tag}")
+        p.drawText(
+            QRectF(outer.left() + 22.0, outer.bottom() - footer_h, outer.width() - 32.0, footer_h),
+            Qt.AlignVCenter | Qt.AlignLeft,
+            f"EN VIVO (sensores reales) · {mode_tag}",
+        )
 
         rows = self._hud_lines()
-        scale = max(0.72, min(1.25, float(self._cfg.font_size) / 22.0))
-        margin = 4.0 if self._cfg.no_margin else 11.0
+        scale = max(0.74, min(1.18, float(self._cfg.font_size) / 22.0))
+        hud_font = QFont("JetBrains Mono", max(7, round(8.0 * scale)), QFont.Bold)
+        fm = QFontMetrics(hud_font)
+        margin = 4.0 if self._cfg.no_margin else 10.0
+        max_w = max(140.0, viewport.width() - margin * 2.0)
+        max_h = max(32.0, viewport.height() - margin * 2.0)
 
         if self._cfg.horizontal:
-            text = "   ".join(f"{k}:{v}" for k, v, _ in rows[:5])
-            box_w = min(outer.width() - margin * 2.0, max(165.0, len(text) * 5.2 * scale))
-            box_h = 26.0 * scale
+            segs = [f"{k} {v}" for k, v, _ in rows[:5]]
+            needed_w = sum(fm.horizontalAdvance(s) + 14.0 for s in segs) + 8.0
+            box_w = min(max_w, max(165.0, needed_w))
+            box_h = min(max_h, float(fm.height()) + 12.0)
+            visible_rows = rows[:5]
         else:
-            box_w = min(outer.width() * 0.62, 168.0 * scale)
-            line_h = 15.0 * scale
-            graph_h = 22.0 if self._cfg.frame_timing else 0.0
-            box_h = min(outer.height() - margin * 2.0, len(rows) * line_h + 14.0 + graph_h)
+            line_h = float(fm.height()) + 2.5
+            graph_h = 24.0 if self._cfg.frame_timing else 0.0
+            max_rows = max(1, int((max_h - 12.0 - graph_h) // line_h))
+            visible_rows = rows[:max_rows]
+            key_w = max(fm.horizontalAdvance(k) for k, _, _ in visible_rows)
+            val_w = max(fm.horizontalAdvance(v) for _, v, _ in visible_rows)
+            box_w = min(max_w, max(172.0, float(key_w + val_w + 30)))
+            box_h = min(max_h, len(visible_rows) * line_h + 12.0 + graph_h)
 
         pos = self._cfg.position
         if "left" in pos:
-            bx = outer.left() + margin
+            bx = viewport.left() + margin
         elif "right" in pos:
-            bx = outer.right() - margin - box_w
+            bx = viewport.right() - margin - box_w
         else:
-            bx = outer.center().x() - box_w * 0.5
-        by = outer.top() + margin if pos.startswith("top") else outer.bottom() - margin - box_h - 14.0
+            bx = viewport.center().x() - box_w * 0.5
+        by = viewport.top() + margin if pos.startswith("top") else viewport.bottom() - margin - box_h
         box = QRectF(bx, by, box_w, box_h)
 
         bg = QColor(12, 15, 20, round(self._cfg.background_alpha * 235))
-        p.setPen(QPen(QColor(16, 185, 129, round(self._cfg.alpha * 130)), 1.0))
+        p.setPen(QPen(QColor(16, 185, 129, round(self._cfg.alpha * 145)), 1.0))
         p.setBrush(bg)
         p.drawRoundedRect(box, float(self._cfg.round_corners), float(self._cfg.round_corners))
 
-        p.setFont(QFont("JetBrains Mono", max(7, round(8.2 * scale)), QFont.Bold))
+        p.setFont(hud_font)
         if self._cfg.horizontal:
-            x_cur = box.left() + 8.0
-            for k, v, col in rows[:5]:
+            x_cur = box.left() + 9.0
+            for k, v, col in visible_rows:
                 col_a = QColor(col)
                 col_a.setAlpha(round(self._cfg.alpha * 255))
                 p.setPen(col_a)
                 seg = f"{k} {v}"
-                p.drawText(QRectF(x_cur, box.top(), box.right() - x_cur - 6.0, box.height()), Qt.AlignVCenter | Qt.AlignLeft, seg)
-                x_cur += (len(seg) + 2) * 5.5 * scale
-                if x_cur > box.right() - 20.0:
+                seg_w = float(fm.horizontalAdvance(seg))
+                if x_cur + seg_w > box.right() - 6.0 and x_cur > box.left() + 12.0:
                     break
+                p.drawText(
+                    QRectF(x_cur, box.top(), box.right() - x_cur - 6.0, box.height()),
+                    Qt.AlignVCenter | Qt.AlignLeft,
+                    seg,
+                )
+                x_cur += seg_w + 13.0
             return
 
-        y_cur = box.top() + 7.0
-        line_h = 15.0 * scale
-        for k, v, col in rows:
-            if y_cur + line_h > box.bottom() - (22.0 if self._cfg.frame_timing else 4.0):
-                break
+        y_cur = box.top() + 6.0
+        key_col_w = float(max(fm.horizontalAdvance(k) for k, _, _ in visible_rows)) + 6.0
+        val_x = box.left() + 9.0 + key_col_w + 6.0
+        val_col_w = max(40.0, box.right() - 9.0 - val_x)
+
+        for k, v, col in visible_rows:
             col_a = QColor(col)
             col_a.setAlpha(round(self._cfg.alpha * 255))
             p.setPen(col_a)
-            p.drawText(QRectF(box.left() + 8, y_cur, 58 * scale, line_h), Qt.AlignVCenter | Qt.AlignLeft, k)
+            p.drawText(QRectF(box.left() + 9.0, y_cur, key_col_w, line_h), Qt.AlignVCenter | Qt.AlignLeft, k)
             fg = QColor("#F1F5F9")
             fg.setAlpha(round(self._cfg.alpha * 255))
             p.setPen(fg)
-            p.drawText(QRectF(box.left() + 56 * scale, y_cur, box.width() - 64 * scale, line_h), Qt.AlignVCenter | Qt.AlignRight, v)
+            elided = fm.elidedText(v, Qt.ElideRight, int(val_col_w))
+            p.drawText(QRectF(val_x, y_cur, val_col_w, line_h), Qt.AlignVCenter | Qt.AlignRight, elided)
             y_cur += line_h
 
-        if self._cfg.frame_timing and y_cur + 16.0 <= box.bottom():
-            g_top = box.bottom() - 18.0
-            p.setPen(QPen(QColor("#10B981"), 1.4))
-            pts = [
-                QPointF(box.left() + 8 + i * ((box.width() - 16) / 14.0), g_top + (5.0 if i % 3 == 0 else (2.0 if i % 2 else 8.0)))
-                for i in range(15)
-            ]
-            for idx in range(len(pts) - 1):
-                p.drawLine(pts[idx], pts[idx + 1])
+        if self._cfg.frame_timing and box.bottom() - y_cur >= 16.0:
+            g_top = box.bottom() - 20.0
+            g_h = 14.0
+            samples = list(self._frametimes)
+            if len(samples) >= 2:
+                mn = min(samples)
+                mx = max(samples)
+                span = max(2.0, mx - mn)
+                p.setPen(QPen(QColor("#10B981"), 1.5))
+                pts = []
+                w_span = max(20.0, box.width() - 18.0)
+                for idx, ft in enumerate(samples):
+                    px = box.left() + 9.0 + idx * (w_span / max(1, len(samples) - 1))
+                    norm = (ft - mn) / span
+                    py = g_top + g_h - (2.0 + norm * (g_h - 4.0))
+                    pts.append(QPointF(px, py))
+                for idx in range(len(pts) - 1):
+                    p.drawLine(pts[idx], pts[idx + 1])
 
 
 class _DesktopAppPickerDialog(QDialog):
