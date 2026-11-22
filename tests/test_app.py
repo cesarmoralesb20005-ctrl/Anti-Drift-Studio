@@ -1219,6 +1219,29 @@ class SteeringWheelTests(unittest.TestCase):
         self.assertEqual(hm_combo.ly_code, -1)
         self.assertEqual(hm_combo.combo_pedal_code, er.ABS_Y)
 
+        # Xbox Series / One Bluetooth controller reports triggers as ABS_GAS/ABS_BRAKE
+        # alongside dual XY + RXRY thumbsticks: must stay a gamepad, NEVER a wheel.
+        with (
+            patch.object(
+                er.fcntl,
+                "ioctl",
+                side_effect=_make_fake_ioctl(
+                    {er.ABS_X, er.ABS_Y, er.ABS_RX, er.ABS_RY, er.ABS_GAS, er.ABS_BRAKE, er.ABS_HAT0X},
+                    {er.BTN_SOUTH},
+                ),
+            ),
+            patch.object(er, "read_abs_info", return_value=None),
+        ):
+            hm_xbox = er.probe_hardware_map(99, "Xbox Wireless Controller")
+        self.assertFalse(hm_xbox.is_wheel)
+        self.assertEqual(hm_xbox.lx_code, er.ABS_X)
+        self.assertEqual(hm_xbox.ly_code, er.ABS_Y)
+        self.assertEqual(hm_xbox.rx_code, er.ABS_RX)
+        self.assertEqual(hm_xbox.ry_code, er.ABS_RY)
+        self.assertEqual(hm_xbox.lt_code, er.ABS_BRAKE)
+        self.assertEqual(hm_xbox.rt_code, er.ABS_GAS)
+        self.assertEqual(er.detect_controller_family("Xbox Wireless Controller", "045e:0b13"), "xbox")
+
     def test_wheel_visualizer_simulator_and_main_window_controls(self) -> None:
         from PySide6.QtCore import QPointF, Qt
         from PySide6.QtGui import QMouseEvent

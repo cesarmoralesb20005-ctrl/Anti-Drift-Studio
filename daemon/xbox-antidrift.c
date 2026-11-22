@@ -742,13 +742,27 @@ static void split_combined_pedals(int raw_i16, int swap_polarity, int *out_brake
     }
 }
 
+static int is_gamepad_device_name(const char *dev_name) {
+    if (!dev_name || !dev_name[0]) return 0;
+    static const char *const gamepad_tokens[] = {
+        "xbox", "x-box", "xinput", "wireless controller",
+        "dualsense", "dualshock", "playstation",
+        "pro controller", "joy-con", "joycon", "nintendo",
+        "gamesir", "8bitdo", "gamepad"
+    };
+    for (size_t i = 0; i < sizeof(gamepad_tokens) / sizeof(gamepad_tokens[0]); i++) {
+        if (strcasestr(dev_name, gamepad_tokens[i]) != NULL) return 1;
+    }
+    return 0;
+}
+
 static int is_wheel_device_name(const char *dev_name) {
     if (!dev_name || !dev_name[0]) return 0;
     static const char *const wheel_tokens[] = {
         "thrustmaster", "t80", "t150", "t248", "t300", "t500", "tmx",
         "ferrari", "g29", "g920", "g923", "g27", "g25",
         "driving force", "fanatec", "moza", "simagic",
-        "hori", "steering", "wheel", "volante", "racing"
+        "hori racing", "racing wheel", "steering", "wheel", "volante"
     };
     for (size_t i = 0; i < sizeof(wheel_tokens) / sizeof(wheel_tokens[0]); i++) {
         if (strcasestr(dev_name, wheel_tokens[i]) != NULL) return 1;
@@ -996,9 +1010,13 @@ static HardwareMap probe_hardware_map(int src_fd, int src_is_rw) {
     int has_gear_btns = bit_is_set(key_bits, BTN_GEAR_DOWN) || bit_is_set(key_bits, BTN_GEAR_UP);
     hm.wheel_use_gear_shifters = has_gear_btns;
 
+    int has_dual_sticks = has_x && has_y && has_rxry;
+    int gamepad_name = is_gamepad_device_name(dev_name);
+    int wheel_name = is_wheel_device_name(dev_name) && !gamepad_name;
+    int pedals_without_dual_sticks = (has_gas || has_brake) && !has_dual_sticks && !gamepad_name;
     int no_y_pedals = has_x && !has_y && (has_z || has_rz || has_throttle);
-    if (is_wheel_device_name(dev_name) || has_wheel_axis || has_gas || has_brake ||
-        has_gear_btns || no_y_pedals) {
+    if ((wheel_name || has_wheel_axis || has_gear_btns || pedals_without_dual_sticks || no_y_pedals) &&
+        !(has_dual_sticks && !has_wheel_axis && !wheel_name)) {
         hm.is_wheel = 1;
     }
 

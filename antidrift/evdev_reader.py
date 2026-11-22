@@ -191,11 +191,28 @@ _WHEEL_NAME_TOKENS = (
     "fanatec",
     "moza",
     "simagic",
-    "hori",
+    "hori racing",
+    "racing wheel",
     "steering",
     "wheel",
     "volante",
-    "racing",
+)
+
+_GAMEPAD_NAME_TOKENS = (
+    "xbox",
+    "x-box",
+    "xinput",
+    "wireless controller",
+    "dualsense",
+    "dualshock",
+    "playstation",
+    "pro controller",
+    "joy-con",
+    "joycon",
+    "nintendo",
+    "gamesir",
+    "8bitdo",
+    "gamepad",
 )
 
 _LOGITECH_WHEEL_PIDS = {
@@ -211,6 +228,12 @@ _LOGITECH_WHEEL_PIDS = {
     "c29b",
     "c29c",
 }
+
+
+def is_gamepad_device_name(name: str | None) -> bool:
+    """Return True when the device name clearly indicates a standard controller/gamepad."""
+    low = (name or "").lower()
+    return any(tok in low for tok in _GAMEPAD_NAME_TOKENS)
 
 
 def is_wheel_device_name(name: str | None) -> bool:
@@ -230,7 +253,7 @@ def detect_controller_family(
     if (
         vid in ("044f", "0eb7", "346e")
         or (vid == "046d" and pid in _LOGITECH_WHEEL_PIDS)
-        or is_wheel_device_name(low)
+        or (is_wheel_device_name(low) and not is_gamepad_device_name(low))
     ):
         return "wheel"
 
@@ -667,14 +690,22 @@ def probe_hardware_map(fd: int, device_name: str = "") -> HardwareAxisMap:
     has_gear_btns = _bit_set(key_bits, BTN_GEAR_DOWN) or _bit_set(key_bits, BTN_GEAR_UP)
     hm.wheel_use_gear_shifters = has_gear_btns
 
+    # Dual-stick gamepads (especially Xbox Series/One Bluetooth via hid-microsoft) expose
+    # analog triggers as ABS_GAS/ABS_BRAKE alongside two full XY + RXRY thumbsticks.
+    has_dual_sticks = has_x and has_y and has_rxry
+    gamepad_name = is_gamepad_device_name(name)
+    wheel_name = is_wheel_device_name(name) and not gamepad_name
+    pedals_without_dual_sticks = (has_gas or has_brake) and not has_dual_sticks and not gamepad_name
     no_y_pedals = has_x and not has_y and (has_z or has_rz or has_throttle)
     hm.is_wheel = bool(
-        is_wheel_device_name(name)
-        or has_wheel_axis
-        or has_gas
-        or has_brake
-        or has_gear_btns
-        or no_y_pedals
+        (
+            wheel_name
+            or has_wheel_axis
+            or has_gear_btns
+            or pedals_without_dual_sticks
+            or no_y_pedals
+        )
+        and not (has_dual_sticks and not has_wheel_axis and not wheel_name)
     )
 
     if hm.is_wheel:
