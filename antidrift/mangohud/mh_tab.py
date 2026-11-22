@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QPointF, QRectF, QThread, Qt, Signal
+from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, QThread, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import (
     QApplication,
@@ -102,6 +102,16 @@ _METRIC_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
         ),
     ),
 )
+
+
+class _NoWheelFilter(QObject):
+    """Ignore mouse wheel scrolling on unfocused spinboxes/sliders/combos inside scroll areas."""
+
+    def eventFilter(self, obj, event):  # type: ignore[override]
+        if event.type() == QEvent.Wheel and isinstance(obj, QWidget) and not obj.hasFocus():
+            event.ignore()
+            return True
+        return super().eventFilter(obj, event)
 
 
 class _MhInstallThread(QThread):
@@ -337,6 +347,7 @@ class MangoHudTabWidget(QWidget):
         self._detected_windows: list[DetectedWindow] = []
         self._install_thread: _MhInstallThread | None = None
         self._pick_thread: _WindowPickThread | None = None
+        self._wheel_guard = _NoWheelFilter(self)
         self._build_ui()
         self._apply_config_to_widgets()
         self.refresh_installation_status()
@@ -484,6 +495,7 @@ class MangoHudTabWidget(QWidget):
         det_row.setSpacing(6)
         self._detected_combo = QComboBox()
         self._detected_combo.setMinimumWidth(260)
+        self._guard_wheel(self._detected_combo)
         det_row.addWidget(self._detected_combo, 1)
         btn_add_det = QPushButton("+ Añadir ventana seleccionada")
         btn_add_det.setObjectName("MiniPill")
@@ -548,6 +560,7 @@ class MangoHudTabWidget(QWidget):
         style_grid.addWidget(QLabel("Tamaño fuente:"), 0, 0)
         self._font_slider = QSlider(Qt.Horizontal)
         self._font_slider.setRange(14, 42)
+        self._guard_wheel(self._font_slider)
         self._font_lbl = QLabel("22 px")
         self._font_slider.valueChanged.connect(self._on_style_changed)
         style_grid.addWidget(self._font_slider, 0, 1)
@@ -556,6 +569,7 @@ class MangoHudTabWidget(QWidget):
         style_grid.addWidget(QLabel("Opacidad fondo:"), 1, 0)
         self._bg_alpha_slider = QSlider(Qt.Horizontal)
         self._bg_alpha_slider.setRange(0, 100)
+        self._guard_wheel(self._bg_alpha_slider)
         self._bg_alpha_lbl = QLabel("50%")
         self._bg_alpha_slider.valueChanged.connect(self._on_style_changed)
         style_grid.addWidget(self._bg_alpha_slider, 1, 1)
@@ -564,6 +578,7 @@ class MangoHudTabWidget(QWidget):
         style_grid.addWidget(QLabel("Bordes redondeados:"), 2, 0)
         self._corners_slider = QSlider(Qt.Horizontal)
         self._corners_slider.setRange(0, 16)
+        self._guard_wheel(self._corners_slider)
         self._corners_lbl = QLabel("8 px")
         self._corners_slider.valueChanged.connect(self._on_style_changed)
         style_grid.addWidget(self._corners_slider, 2, 1)
@@ -574,6 +589,7 @@ class MangoHudTabWidget(QWidget):
         self._fps_limit_spin.setRange(0, 360)
         self._fps_limit_spin.setSpecialValueText("Sin límite (0)")
         self._fps_limit_spin.setSuffix(" FPS")
+        self._guard_wheel(self._fps_limit_spin)
         self._fps_limit_spin.valueChanged.connect(self._on_style_changed)
         style_grid.addWidget(self._fps_limit_spin, 3, 1)
 
@@ -654,6 +670,7 @@ class MangoHudTabWidget(QWidget):
         fl.setContentsMargins(14, 10, 14, 10)
         fl.setSpacing(8)
         self._save_status_lbl = QLabel("Configura tu HUD y pulsa Guardar y aplicar.")
+        self._save_status_lbl.setWordWrap(True)
         self._save_status_lbl.setObjectName("MutedNote")
         fl.addWidget(self._save_status_lbl, 1)
         btn_apply = QPushButton("Guardar y aplicar MangoHud")
@@ -708,16 +725,35 @@ class MangoHudTabWidget(QWidget):
 
     # ── Window & Process Selection ──
 
+    def _guard_wheel(self, widget: QWidget) -> None:
+        widget.setFocusPolicy(Qt.StrongFocus)
+        widget.installEventFilter(self._wheel_guard)
+
+    def _running_status_for_process(self, process_name: str) -> tuple[bool, bool]:
+        """Return (is_open, hud_loaded) across currently detected open windows."""
+        target = (process_name or "").strip().lower()
+        if not target:
+            return False, False
+        is_open = False
+        for win in self._detected_windows:
+            if win.process_name.lower() == target:
+                is_open = True
+                if win.hud_loaded:
+                    return True, True
+        return is_open, False
+
     def refresh_open_windows(self) -> None:
         self._detected_windows = discover_open_windows()
         self._detected_combo.clear()
         if not self._detected_windows:
             self._detected_combo.addItem("No se detectaron ventanas activas (abre un juego o app)", None)
-            return
-        for win in self._detected_windows:
-            hud_tag = " · HUD activo" if win.hud_loaded else ""
-            label = f"{win.title}  [{win.process_name}]  ({win.api_hint}{hud_tag})"
-            self._detected_combo.addItem(label, win)
+        else:
+            for win in self._detected_windows:
+                hud_tag = " · ✓ HUD activo" if win.hud_loaded else " · ⚠ abierta sin HUD (reiniciar)"
+                label = f"{win.title}  [{win.process_name}]  ({win.api_hint}{hud_tag})"
+                self._detected_combo.addItem(label, win)
+        if hasattr(self, "_rules_container"):
+            self._rebuild_rules_list()
 
     def _add_or_enable_rule(self, title: str, process_name: str, exec_cmd: str = "") -> None:
         pname = sanitize_process_name(process_name)
@@ -762,17 +798,26 @@ class MangoHudTabWidget(QWidget):
             self.refresh_open_windows()
             return
         self._add_or_enable_rule(win.title, win.process_name, win.exec_cmd)
+        self.refresh_open_windows()
         self.save_and_apply()
-        self._save_status_lbl.setText(msg)
+        if win.hud_loaded:
+            self._save_status_lbl.setText(f"{msg} · ✓ HUD cargado en vivo.")
 
     def _on_add_detected_window(self) -> None:
         win = self._detected_combo.currentData()
         if not isinstance(win, DetectedWindow):
             return
         self._add_or_enable_rule(win.title, win.process_name, win.exec_cmd)
-        self._save_status_lbl.setText(
-            f"Ventana '{win.process_name}' añadida. Pulsa 'Guardar y aplicar MangoHud'."
-        )
+        if win.hud_loaded:
+            self._save_status_lbl.setStyleSheet("color: #34D399; font-size: 12px;")
+            self._save_status_lbl.setText(
+                f"Ventana '{win.process_name}' añadida (ya tiene HUD activo). Pulsa 'Guardar y aplicar MangoHud'."
+            )
+        else:
+            self._save_status_lbl.setStyleSheet("color: #FBBF24; font-size: 12px;")
+            self._save_status_lbl.setText(
+                f"Ventana '{win.process_name}' añadida. Pulsa 'Guardar y aplicar' y luego cierra y vuelve a abrir '{win.process_name}'."
+            )
 
     def _on_add_desktop_app(self) -> None:
         apps = list_desktop_apps()
@@ -827,7 +872,21 @@ class MangoHudTabWidget(QWidget):
             chk.toggled.connect(lambda val, i=idx: self._on_rule_enabled(i, val))
             rlay.addWidget(chk, 1)
 
+            is_open, is_hud = self._running_status_for_process(rule.process_name)
+            state_lbl = QLabel()
+            if is_open and is_hud:
+                state_lbl.setText("✓ Activo en vivo")
+                state_lbl.setStyleSheet("color: #34D399; font-size: 11px; font-weight: 600;")
+            elif is_open:
+                state_lbl.setText("⚠ Abierta sin HUD: cierra y vuelve a abrir")
+                state_lbl.setStyleSheet("color: #FBBF24; font-size: 11px; font-weight: 600;")
+            else:
+                state_lbl.setText("Listo para al abrir")
+                state_lbl.setStyleSheet("color: #64748B; font-size: 11px;")
+            rlay.addWidget(state_lbl)
+
             pos_combo = QComboBox()
+            self._guard_wheel(pos_combo)
             pos_combo.addItem("Posición: Global", "")
             for pk, plbl in _POS_LABELS:
                 pos_combo.addItem(plbl, pk)
@@ -841,6 +900,7 @@ class MangoHudTabWidget(QWidget):
             rlay.addWidget(pos_combo)
 
             fps_combo = QComboBox()
+            self._guard_wheel(fps_combo)
             for fv, fl in ((-1, "FPS: Global"), (0, "Ilimitado"), (60, "60 FPS"), (120, "120 FPS"), (144, "144 FPS")):
                 fps_combo.addItem(fl, fv)
             if rule.override_fps_limit not in (-1, 0, 60, 120, 144):
@@ -856,7 +916,12 @@ class MangoHudTabWidget(QWidget):
 
             btn_launch = QPushButton("▶ Lanzar")
             btn_launch.setObjectName("MiniPill")
-            btn_launch.setEnabled(bool(rule.exec_cmd or not rule.process_name.lower().endswith(".exe")))
+            can_launch = bool(rule.exec_cmd or not rule.process_name.lower().endswith(".exe"))
+            btn_launch.setEnabled(can_launch)
+            if not can_launch:
+                btn_launch.setToolTip(
+                    "Los juegos .exe se abren desde Heroic, Steam o Lutris; tras guardar aquí, cierra y vuelve a abrir el juego."
+                )
             btn_launch.clicked.connect(lambda _=False, r=rule: self._on_launch_rule(r))
             rlay.addWidget(btn_launch)
 
@@ -1019,7 +1084,27 @@ class MangoHudTabWidget(QWidget):
         self._config = self._config.clamped()
         save_mangohud_app_config(self._config)
         written = sync_mangohud_system_files(self._config)
+        self._detected_windows = discover_open_windows()
+        self._rebuild_rules_list()
         n_rules = sum(1 for r in self._config.window_rules if r.enabled)
-        self._save_status_lbl.setText(
-            f"✓ MangoHud guardado ({len(written)} archivos, {n_rules} ventanas activas)."
-        )
+
+        needs_restart: list[str] = []
+        for r in self._config.window_rules:
+            if not r.enabled:
+                continue
+            is_open, is_hud = self._running_status_for_process(r.process_name)
+            if is_open and not is_hud:
+                needs_restart.append(r.process_name)
+
+        if needs_restart:
+            joined = ", ".join(needs_restart)
+            self._save_status_lbl.setStyleSheet("color: #FBBF24; font-size: 12px;")
+            self._save_status_lbl.setText(
+                f"⚠ Guardado, pero {joined} ya estaba abierto sin MangoHud. "
+                "Ciérralo (y reinicia Heroic/Steam si estaba abierto) y ábrelo de nuevo para ver el HUD."
+            )
+        else:
+            self._save_status_lbl.setStyleSheet("color: #34D399; font-size: 12px;")
+            self._save_status_lbl.setText(
+                f"✓ MangoHud guardado ({len(written)} archivos, {n_rules} ventanas activas)."
+            )

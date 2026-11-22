@@ -1940,18 +1940,22 @@ class MangoHudAndOptionalDepsTests(unittest.TestCase):
             sync_mangohud_system_files(loaded, mh_dir=mh_dir, env_file=env_file)
             main_txt = (mh_dir / "MangoHud.conf").read_text(encoding="utf-8")
             az_txt = (mh_dir / "azimuth.exe.conf").read_text(encoding="utf-8")
+            wine_az_txt = (mh_dir / "wine-azimuth.conf").read_text(encoding="utf-8")
             self.assertIn("no_display\n", main_txt)
             self.assertIn("no_display=0\n", az_txt)
+            self.assertIn("no_display=0\n", wine_az_txt)
             self.assertIn("position=top-right\n", az_txt)
             self.assertIn("fps_limit=60\n", az_txt)
             self.assertFalse((mh_dir / "glxgears.conf").exists())
             self.assertEqual(env_file.read_text(encoding="utf-8"), "MANGOHUD=1\n")
 
-            # Removing/disabling a managed rule cleans up its managed .conf file
+            # Removing/disabling a managed rule cleans up all managed .conf aliases
             loaded.window_rules[0].enabled = False
             loaded.session_mode = "off"
             sync_mangohud_system_files(loaded, mh_dir=mh_dir, env_file=env_file)
             self.assertFalse((mh_dir / "azimuth.exe.conf").exists())
+            self.assertFalse((mh_dir / "wine-azimuth.conf").exists())
+            self.assertFalse((mh_dir / "wine-azimuth.exe.conf").exists())
             self.assertFalse(env_file.exists())
 
             rendered = render_mangohud_conf(apply_mangohud_preset(MangoHudConfig(), "Sim Racing / Debug"))
@@ -1985,8 +1989,25 @@ class MangoHudAndOptionalDepsTests(unittest.TestCase):
                 mh_tab._add_or_enable_rule("Forza Horizon 2", "azimuth.exe", "")
                 self.assertEqual(len(mh_tab._config.window_rules), 1)
                 self.assertEqual(mh_tab._rules_container.count(), 1)
-                mh_tab.save_and_apply()
+                from unittest import mock
+                from antidrift.mangohud.mh_backend import DetectedWindow
+
+                fake_open = [
+                    DetectedWindow(
+                        pid=99999,
+                        title="Azimuth",
+                        process_name="azimuth.exe",
+                        exec_cmd="",
+                        api_hint="Vulkan",
+                        hud_loaded=False,
+                    )
+                ]
+                with mock.patch("antidrift.mangohud.mh_tab.discover_open_windows", return_value=fake_open):
+                    mh_tab.save_and_apply()
                 self.assertTrue((Path(tmp) / "MangoHud" / "azimuth.exe.conf").exists())
+                self.assertTrue((Path(tmp) / "MangoHud" / "wine-azimuth.conf").exists())
+                self.assertIn("azimuth.exe", mh_tab._save_status_lbl.text())
+                self.assertIn("sin MangoHud", mh_tab._save_status_lbl.text())
 
                 img = QImage(QSize(1180, 770), QImage.Format_ARGB32)
                 win.render(img)

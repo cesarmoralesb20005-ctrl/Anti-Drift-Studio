@@ -404,6 +404,21 @@ def list_desktop_apps() -> list[DesktopAppInfo]:
     return apps
 
 
+def _rule_conf_filenames(process_name: str) -> list[str]:
+    """Return MangoHud config filename(s) needed for a process (native + Wine/Proton)."""
+    clean_name = sanitize_process_name(process_name)
+    if not clean_name:
+        return []
+    names = [f"{clean_name}.conf"]
+    if clean_name.lower().endswith(".exe") and len(clean_name) > 4:
+        stem = clean_name[:-4]
+        # MangoHud looks up Wine/Proton apps as wine-<exe_without_ext>.conf
+        for cand in (f"wine-{stem}.conf", f"wine-{clean_name}.conf", f"{stem}.conf"):
+            if cand not in names:
+                names.append(cand)
+    return names
+
+
 def sync_mangohud_system_files(
     cfg: MangoHudConfig,
     mh_dir: Path | None = None,
@@ -435,14 +450,14 @@ def sync_mangohud_system_files(
     for rule in clean.window_rules:
         if not rule.enabled:
             continue
-        fname = f"{rule.process_name}.conf"
-        rpath = target_dir / fname
-        rpath.write_text(
-            render_mangohud_conf(clean, rule=rule, force_no_display=False),
-            encoding="utf-8",
-        )
-        new_managed.append(fname)
-        written.append(rpath)
+        rendered = render_mangohud_conf(clean, rule=rule, force_no_display=False)
+        for fname in _rule_conf_filenames(rule.process_name):
+            rpath = target_dir / fname
+            rpath.write_text(rendered, encoding="utf-8")
+            if fname not in new_managed:
+                new_managed.append(fname)
+            if rpath not in written:
+                written.append(rpath)
 
     for old_name in prev_managed:
         if old_name not in new_managed:
@@ -460,25 +475,29 @@ def sync_mangohud_system_files(
     elif epath.exists():
         epath.unlink(missing_ok=True)
 
-    # Live session systemd --user environment & running MangoHud hot-reload
-    if mh_dir is None and shutil.which("systemctl"):
-        try:
-            if want_global_env:
+    # Live session systemd --user + D-Bus activation environment & running MangoHud hot-reload
+    if mh_dir is None:
+        if shutil.which("systemctl"):
+            try:
+                cmd = (
+                    ["systemctl", "--user", "set-environment", "MANGOHUD=1"]
+                    if want_global_env
+                    else ["systemctl", "--user", "unset-environment", "MANGOHUD"]
+                )
+                subprocess.run(cmd, capture_output=True, timeout=2.0, check=False)
+            except OSError:
+                pass
+        if shutil.which("dbus-update-activation-environment"):
+            try:
+                dbus_arg = "MANGOHUD=1" if want_global_env else "MANGOHUD="
                 subprocess.run(
-                    ["systemctl", "--user", "set-environment", "MANGOHUD=1"],
+                    ["dbus-update-activation-environment", "--systemd", dbus_arg],
                     capture_output=True,
                     timeout=2.0,
                     check=False,
                 )
-            else:
-                subprocess.run(
-                    ["systemctl", "--user", "unset-environment", "MANGOHUD"],
-                    capture_output=True,
-                    timeout=2.0,
-                    check=False,
-                )
-        except OSError:
-            pass
+            except OSError:
+                pass
 
     if mh_dir is None and shutil.which("mangohudctl"):
         try:
