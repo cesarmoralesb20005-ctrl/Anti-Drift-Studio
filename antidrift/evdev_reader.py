@@ -281,9 +281,9 @@ def detect_controller_family(
     ):
         return "nintendo_pro"
 
-    # Match explicit Xbox names & Xbox vendor IDs BEFORE generic "wireless controller"
-    if vid in ("045e", "0e6f", "24c6", "20d6") or any(
-        k in low for k in ("xbox", "x-box", "xinput")
+    # Match explicit Xbox names & Xbox/GameSir vendor IDs BEFORE generic "wireless controller"
+    if vid in ("045e", "0e6f", "24c6", "20d6", "3537") or any(
+        k in low for k in ("xbox", "x-box", "xinput", "gamesir")
     ):
         return "xbox"
 

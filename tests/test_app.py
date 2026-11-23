@@ -2082,5 +2082,89 @@ class MangoHudAndOptionalDepsTests(unittest.TestCase):
                     os.environ["XDG_CONFIG_HOME"] = old_xdg
 
 
+class GameSirSubsystemTests(unittest.TestCase):
+    def test_gamesir_family_packets_and_device_info(self) -> None:
+        from antidrift.evdev_reader import detect_controller_family
+        from antidrift.gamesir.nova2lite import (
+            GameSirHardwareConfig,
+            build_dpad_packet,
+            build_hair_trigger_packet,
+            build_paddle_remap_packet,
+            build_vibration_packet,
+            load_gamesir_config,
+            parse_device_info,
+            save_gamesir_config,
+        )
+
+        self.assertEqual(detect_controller_family("Generic X-Box pad", "3537:1098"), "xbox")
+        self.assertEqual(detect_controller_family("GameSir-Nova 2 Lite", "3537:100f"), "xbox")
+
+        vpkt = build_vibration_packet(50, 75)
+        self.assertEqual(len(vpkt), 65)
+        self.assertEqual(vpkt[0], 0x00)
+        self.assertEqual(vpkt[1], 0x25)
+        self.assertEqual(vpkt[13], sum(vpkt[1:13]) & 0xFF)
+
+        hpkt = build_hair_trigger_packet(True, False)
+        self.assertEqual(hpkt[1:5], bytes([0x21, 0x01, 1, 2]))
+        self.assertEqual(hpkt[5], sum(hpkt[1:5]) & 0xFF)
+
+        dpkt = build_dpad_packet(0x01, True)
+        self.assertEqual(dpkt[1:6], bytes([0x23, 0x01, 0x06, 0x01, 1]))
+
+        lpkt = build_paddle_remap_packet(False, "A")
+        self.assertEqual(lpkt[1:7], bytes([0xF1, 0x01, 0x09, 0xCB, 0x01, 0xB4]))
+        rpkt = build_paddle_remap_packet(True, "Sin cambio")
+        self.assertEqual(rpkt[1:5], bytes([0xF1, 0x02, 0x09, 0xCD]))
+
+        rep_wireless = bytes([0x01, 0x02] + [0] * 8 + [0x82, 0x01] + [0] * 6 + [0x55])
+        info_w = parse_device_info(rep_wireless)
+        self.assertEqual(info_w["firmware"], "1.82")
+        self.assertEqual(info_w["battery"], 85)
+        self.assertFalse(info_w["charging"])
+
+        rep_wired = bytes([0x01, 0x02] + [0] * 8 + [0x82, 0x01] + [0] * 6 + [0xFF])
+        info_c = parse_device_info(rep_wired)
+        self.assertEqual(info_c["battery"], 100)
+        self.assertTrue(info_c["charging"])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "gs.json"
+            cfg = GameSirHardwareConfig(vib_left=64, hair_trigger_rt=True, l4_target="B")
+            save_gamesir_config(cfg, p)
+            loaded = load_gamesir_config(p)
+            self.assertEqual(loaded.vib_left, 75)
+            self.assertTrue(loaded.hair_trigger_rt)
+            self.assertEqual(loaded.l4_target, "B")
+
+    def test_gamesir_tab_ui_and_main_window_integration(self) -> None:
+        from PySide6.QtCore import QSize
+        from PySide6.QtGui import QImage
+        from PySide6.QtWidgets import QApplication
+        from antidrift.main_window import MainWindow
+
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as tmp:
+            old_xdg = os.environ.get("XDG_CONFIG_HOME")
+            os.environ["XDG_CONFIG_HOME"] = tmp
+            try:
+                win = MainWindow(start_reader=False, enable_tray=False)
+                win.resize(1180, 770)
+                win._main_tabs.setCurrentIndex(win._gs_tab_idx)
+                app.processEvents()
+                win._gamesir_tab._hair_lt_chk.setChecked(True)
+                win._gamesir_tab.save_and_apply()
+                self.assertTrue((Path(tmp) / "xbox-antidrift-gamesir.json").exists())
+                img = QImage(QSize(1180, 770), QImage.Format_ARGB32)
+                win.render(img)
+                self.assertFalse(img.isNull())
+                win.close()
+            finally:
+                if old_xdg is None:
+                    os.environ.pop("XDG_CONFIG_HOME", None)
+                else:
+                    os.environ["XDG_CONFIG_HOME"] = old_xdg
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
