@@ -60,7 +60,6 @@ from .deps import (
     install_missing_dependencies,
     install_optional_dependency,
 )
-from .gamesir.gs_tab import GameSirTabWidget
 from .mangohud.mh_tab import MangoHudTabWidget
 from .evdev_reader import (
     ControllerReaderThread,
@@ -856,28 +855,22 @@ class MainWindow(QMainWindow):
         self._mangohud_tab.dependencies_changed.connect(self._refresh_optional_deps_ui)
         tabs.addTab(self._mangohud_tab, "MangoHud (HUD)")
         mh_idx = tabs.indexOf(self._mangohud_tab)
-        self._gamesir_tab = GameSirTabWidget()
-        tabs.addTab(self._gamesir_tab, "GameSir")
-        gs_idx = tabs.indexOf(self._gamesir_tab)
         tabs.addTab(self._build_settings_tab(), "Ajustes")
 
         def _on_tab_changed(idx: int) -> None:
-            prof_bar.setVisible(idx not in (clips_idx, eq_idx, mh_idx, gs_idx))
+            prof_bar.setVisible(idx not in (clips_idx, eq_idx, mh_idx))
             if idx == eq_idx and self._start_reader:
                 self._eq_tab.refresh_audio_devices()
                 self._eq_tab.refresh_app_streams()
             elif idx == mh_idx:
                 self._mangohud_tab.refresh_installation_status()
                 self._mangohud_tab.refresh_open_windows()
-            elif idx == gs_idx:
-                self._gamesir_tab.refresh_devices()
 
         tabs.currentChanged.connect(_on_tab_changed)
         self._main_tabs = tabs
         self._clips_tab_idx = clips_idx
         self._eq_tab_idx = eq_idx
         self._mh_tab_idx = mh_idx
-        self._gs_tab_idx = gs_idx
         w_lay.addWidget(tabs, 1)
         return wrapper
 

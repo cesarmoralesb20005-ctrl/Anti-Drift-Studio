@@ -868,6 +868,15 @@ def read_supported_extra_keys(fd: int) -> list[int]:
     return extras
 
 
+def default_extra_keys_for_device(name: str, vid_pid: str = "") -> list[int]:
+    """Return baseline extra paddle EV_KEY codes for controllers with known rear paddles."""
+    vid = vid_pid.split(":")[0].lower() if vid_pid else ""
+    low = (name or "").lower()
+    if vid == "3537" or "gamesir" in low:
+        return [704, 705]
+    return []
+
+
 def read_raw_pressed_codes(fd: int) -> set[int]:
     """Query all currently held physical EV_KEY codes via EVIOCGKEY."""
     buf = bytearray(KEY_BUF_LEN)
@@ -1184,10 +1193,19 @@ class ControllerReaderThread(QThread):
                                 if hm.is_wheel:
                                     state.is_wheel = True
                                     state.controller_family = "wheel"
-                                state.supported_extra_keys = read_supported_extra_keys(
-                                    raw_fd
-                                )
+                                detected_extras = read_supported_extra_keys(raw_fd)
+                                for extra_code in default_extra_keys_for_device(
+                                    devices.physical_name or "",
+                                    devices.physical_vid_pid or "",
+                                ):
+                                    if extra_code not in detected_extras:
+                                        detected_extras.append(extra_code)
+                                state.supported_extra_keys = sorted(detected_extras)
                                 prev_raw_pressed = read_raw_pressed_codes(raw_fd)
+                                state.extra_buttons = {
+                                    c: (c in prev_raw_pressed)
+                                    for c in state.supported_extra_keys
+                                }
                                 self._sync_abs_from_fd(
                                     raw_fd, hm, target_raw=True, state=state
                                 )
