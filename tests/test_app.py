@@ -2111,6 +2111,8 @@ class GameSirExtraButtonsTests(unittest.TestCase):
                 physical_vid_pid="3537:1098",
                 supported_extra_keys=[704, 705],
                 extra_buttons={704: False, 705: True},
+                battery_level=52,
+                battery_charging=False,
             )
         )
         rects = preview._extra_badge_rects()
@@ -2118,6 +2120,15 @@ class GameSirExtraButtonsTests(unittest.TestCase):
         img = QImage(QSize(620, 480), QImage.Format_ARGB32)
         preview.render(img)
         self.assertFalse(img.isNull())
+        preview.set_controller_state(
+            ControllerState(
+                mode="direct",
+                controller_family="xbox",
+                battery_level=100,
+                battery_charging=True,
+            )
+        )
+        preview.render(img)
         app.processEvents()
 
     def test_main_window_has_no_dedicated_gamesir_tab(self) -> None:

@@ -343,6 +343,8 @@ class ControllerState:
     buttons: dict[str, bool] = field(default_factory=empty_buttons)
     extra_buttons: dict[int, bool] = field(default_factory=dict)
     supported_extra_keys: list[int] = field(default_factory=list)
+    battery_level: int | None = None
+    battery_charging: bool = False
 
 
 def _read_sys_text(path: Path) -> str:
@@ -877,6 +879,74 @@ def default_extra_keys_for_device(name: str, vid_pid: str = "") -> list[int]:
     return []
 
 
+def _query_gamesir_battery_hidraw(vid: str) -> tuple[int | None, bool]:
+    """Read-only 0x01 device-info query on GameSir 0xFF7A hidraw node."""
+    if vid != "3537":
+        return None, False
+    sys_hid = Path("/sys/class/hidraw")
+    if not sys_hid.exists():
+        return None, False
+    for hdir in sorted(sys_hid.glob("hidraw*")):
+        dev_dir = hdir / "device"
+        uevent = _read_sys_text(dev_dir / "uevent")
+        if "00003537:" not in uevent.lower():
+            continue
+        try:
+            rdesc = (dev_dir / "report_descriptor").read_bytes()
+        except OSError:
+            continue
+        if b"\x06\x7a\xff" not in rdesc:
+            continue
+        devnode = f"/dev/{hdir.name}"
+        fd = None
+        try:
+            fd = os.open(devnode, os.O_RDWR | os.O_NONBLOCK)
+            os.write(fd, b"\x00\x01" + b"\x00" * 63)
+            deadline = time.monotonic() + 0.15
+            while time.monotonic() < deadline:
+                r, _, _ = select.select([fd], [], [], 0.03)
+                if not r:
+                    continue
+                data = os.read(fd, 64)
+                if len(data) >= 19 and data[0] == 0x01 and data[1] != 0x00:
+                    bat_raw = int(data[18])
+                    if bat_raw == 0xFF:
+                        return 100, True
+                    return min(100, bat_raw & 0x7F), bool(bat_raw & 0x80)
+        except OSError:
+            pass
+        finally:
+            if fd is not None:
+                _safe_close(fd)
+    return None, False
+
+
+def read_controller_battery(
+    name: str = "", vid_pid: str = ""
+) -> tuple[int | None, bool]:
+    """Return (battery_percent, is_charging) from sysfs power_supply or GameSir HID."""
+    vid = vid_pid.split(":")[0].lower() if vid_pid else ""
+    if vid == "3537" or "gamesir" in (name or "").lower():
+        lvl, chg = _query_gamesir_battery_hidraw("3537")
+        if lvl is not None:
+            return lvl, chg
+
+    ps_root = Path("/sys/class/power_supply")
+    if not ps_root.exists():
+        return None, False
+    for entry in sorted(ps_root.iterdir()):
+        scope = _read_sys_text(entry / "scope").lower()
+        ptype = _read_sys_text(entry / "type").lower()
+        if ptype != "battery" or (scope and scope != "device"):
+            continue
+        cap_txt = _read_sys_text(entry / "capacity")
+        if not cap_txt.isdigit():
+            continue
+        status = _read_sys_text(entry / "status").lower()
+        return max(0, min(100, int(cap_txt))), status == "charging"
+    return None, False
+
+
 def read_raw_pressed_codes(fd: int) -> set[int]:
     """Query all currently held physical EV_KEY codes via EVIOCGKEY."""
     buf = bytearray(KEY_BUF_LEN)
@@ -1133,6 +1203,7 @@ class ControllerReaderThread(QThread):
         self._raw_combo_pedal = 0
         last_discover = 0.0
         last_emit = 0.0
+        last_battery_at = 0.0
         last_virtual_event_at = 0.0
         devices = DetectedDevices()
         state = ControllerState()
@@ -1206,6 +1277,13 @@ class ControllerReaderThread(QThread):
                                     c: (c in prev_raw_pressed)
                                     for c in state.supported_extra_keys
                                 }
+                                bat_lvl, bat_chg = read_controller_battery(
+                                    devices.physical_name or "",
+                                    devices.physical_vid_pid or "",
+                                )
+                                state.battery_level = bat_lvl
+                                state.battery_charging = bat_chg
+                                last_battery_at = now
                                 self._sync_abs_from_fd(
                                     raw_fd, hm, target_raw=True, state=state
                                 )
@@ -1532,6 +1610,23 @@ class ControllerReaderThread(QThread):
 
                 self._step_calibration(state, has_raw_source=(raw_fd is not None))
 
+                if (
+                    raw_fd is not None
+                    and now - last_battery_at >= 15.0
+                ):
+                    last_battery_at = now
+                    bat_lvl, bat_chg = read_controller_battery(
+                        state.physical_name,
+                        state.physical_vid_pid,
+                    )
+                    if (
+                        bat_lvl != state.battery_level
+                        or bat_chg != state.battery_charging
+                    ):
+                        state.battery_level = bat_lvl
+                        state.battery_charging = bat_chg
+                        dirty = True
+
                 now_emit = time.monotonic()
                 while syn_times and syn_times[0] < now_emit - 1.0:
                     syn_times.popleft()
@@ -1571,6 +1666,8 @@ class ControllerReaderThread(QThread):
                         buttons=dict(state.buttons),
                         extra_buttons=dict(state.extra_buttons),
                         supported_extra_keys=list(state.supported_extra_keys),
+                        battery_level=state.battery_level,
+                        battery_charging=state.battery_charging,
                     )
                     self.state_updated.emit(snapshot)
         finally:

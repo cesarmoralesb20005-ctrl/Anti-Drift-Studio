@@ -499,6 +499,7 @@ class ControllerWidget(QWidget):
                 self._state.buttons.get("RS", False),
             )
         self._draw_extra_buttons(painter)
+        self._draw_battery_badge(painter)
 
     def _draw_triggers_and_bumpers(
         self, p: QPainter, spec: _ControllerLayoutSpec
@@ -1229,3 +1230,42 @@ class ControllerWidget(QWidget):
             p.setPen(QColor("#FFFFFF") if pressed else QColor("#94A3B8"))
             p.setFont(QFont("JetBrains Mono", 8.5, QFont.Bold))
             p.drawText(rect, Qt.AlignCenter, short_extra_badge(code))
+
+    def _draw_battery_badge(self, p: QPainter) -> None:
+        lvl = self._state.battery_level
+        if lvl is None:
+            return
+        pct = max(0, min(100, int(lvl)))
+        chg = bool(self._state.battery_charging)
+        pill = QRectF(504.0, 14.0, 82.0, 24.0)
+        p.setPen(QPen(QColor("#242E3A"), 1.2))
+        p.setBrush(QColor("#10141A"))
+        p.drawRoundedRect(pill, 6, 6)
+
+        if chg:
+            fill_col = QColor("#38BDF8")
+        elif pct >= 50:
+            fill_col = QColor("#10B981")
+        elif pct >= 20:
+            fill_col = QColor("#F59E0B")
+        else:
+            fill_col = QColor("#EF4444")
+
+        # Battery body + terminal nub
+        bx, by, bw, bh = 512.0, 20.0, 22.0, 12.0
+        p.setPen(QPen(QColor("#94A3B8"), 1.2))
+        p.setBrush(Qt.NoBrush)
+        p.drawRoundedRect(QRectF(bx, by, bw, bh), 2.5, 2.5)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor("#94A3B8"))
+        p.drawRoundedRect(QRectF(bx + bw + 0.5, by + 3.5, 2.5, 5.0), 1.0, 1.0)
+
+        inner_w = max(0.0, (bw - 4.0) * (pct / 100.0))
+        if inner_w > 0.5:
+            p.setBrush(fill_col)
+            p.drawRoundedRect(QRectF(bx + 2.0, by + 2.0, inner_w, bh - 4.0), 1.2, 1.2)
+
+        p.setPen(QColor("#E2E8F0"))
+        p.setFont(QFont("JetBrains Mono", 8.5, QFont.Bold))
+        txt = f"{pct}%+" if chg else f"{pct}%"
+        p.drawText(QRectF(538.0, 14.0, 44.0, 24.0), Qt.AlignCenter, txt)
