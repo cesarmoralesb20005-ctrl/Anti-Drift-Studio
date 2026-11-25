@@ -921,29 +921,68 @@ def _query_gamesir_battery_hidraw(vid: str) -> tuple[int | None, bool]:
     return None, False
 
 
+_CAPACITY_LEVEL_PCT: dict[str, int] = {
+    "full": 100,
+    "high": 75,
+    "normal": 50,
+    "low": 15,
+    "critical": 5,
+}
+
+
 def read_controller_battery(
-    name: str = "", vid_pid: str = ""
+    name: str = "",
+    vid_pid: str = "",
+    power_supply_root: Path | None = None,
 ) -> tuple[int | None, bool]:
     """Return (battery_percent, is_charging) from sysfs power_supply or GameSir HID."""
     vid = vid_pid.split(":")[0].lower() if vid_pid else ""
-    if vid == "3537" or "gamesir" in (name or "").lower():
+    if power_supply_root is None and (vid == "3537" or "gamesir" in (name or "").lower()):
         lvl, chg = _query_gamesir_battery_hidraw("3537")
         if lvl is not None:
             return lvl, chg
 
-    ps_root = Path("/sys/class/power_supply")
+    ps_root = power_supply_root or Path("/sys/class/power_supply")
     if not ps_root.exists():
         return None, False
+
+    low_name = (name or "").lower()
+    tokens = [t for t in ("xbox", "xpadneo", "microsoft", "sony", "dualsense", "dualshock", "nintendo", "pro controller", "switch") if t in low_name]
+    fallback: tuple[int, bool] | None = None
+
     for entry in sorted(ps_root.iterdir()):
         scope = _read_sys_text(entry / "scope").lower()
         ptype = _read_sys_text(entry / "type").lower()
-        if ptype != "battery" or (scope and scope != "device"):
-            continue
-        cap_txt = _read_sys_text(entry / "capacity")
-        if not cap_txt.isdigit():
+        present = _read_sys_text(entry / "present")
+        if ptype != "battery" or (scope and scope != "device") or present == "0":
             continue
         status = _read_sys_text(entry / "status").lower()
-        return max(0, min(100, int(cap_txt))), status == "charging"
+        charging = status == "charging"
+
+        pct: int | None = None
+        cap_txt = _read_sys_text(entry / "capacity")
+        if cap_txt.isdigit():
+            pct = max(0, min(100, int(cap_txt)))
+        else:
+            lvl_txt = _read_sys_text(entry / "capacity_level").lower()
+            if lvl_txt in _CAPACITY_LEVEL_PCT:
+                pct = _CAPACITY_LEVEL_PCT[lvl_txt]
+            elif status == "full":
+                pct = 100
+        if pct is None:
+            continue
+
+        model = _read_sys_text(entry / "model_name").lower()
+        ename = entry.name.lower()
+        uevent = _read_sys_text(entry / "uevent").lower()
+        hay = f"{ename} {model} {uevent}"
+        if (vid and vid in hay) or any(t in hay for t in tokens):
+            return pct, charging
+        if fallback is None:
+            fallback = (pct, charging)
+
+    if fallback is not None:
+        return fallback
     return None, False
 
 
@@ -1612,7 +1651,7 @@ class ControllerReaderThread(QThread):
 
                 if (
                     raw_fd is not None
-                    and now - last_battery_at >= 15.0
+                    and now - last_battery_at >= 3.0
                 ):
                     last_battery_at = now
                     bat_lvl, bat_chg = read_controller_battery(

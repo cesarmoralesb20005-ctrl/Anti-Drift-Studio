@@ -2159,8 +2159,38 @@ class GameSirExtraButtonsTests(unittest.TestCase):
         from unittest.mock import patch
         from PySide6.QtWidgets import QApplication
         from antidrift.clips.sound_fx import ensure_battery_sound_assets
-        from antidrift.evdev_reader import ControllerState
+        from antidrift.evdev_reader import ControllerState, read_controller_battery
         from antidrift.main_window import MainWindow
+
+        with tempfile.TemporaryDirectory() as ps_tmp:
+            ps_root = Path(ps_tmp)
+            sys_bat = ps_root / "BAT0"
+            sys_bat.mkdir()
+            (sys_bat / "type").write_text("Battery\n", encoding="utf-8")
+            (sys_bat / "scope").write_text("System\n", encoding="utf-8")
+            (sys_bat / "capacity").write_text("90\n", encoding="utf-8")
+
+            xb_bat = ps_root / "hid-00:11:22:33:44:55-battery"
+            xb_bat.mkdir()
+            (xb_bat / "type").write_text("Battery\n", encoding="utf-8")
+            (xb_bat / "scope").write_text("Device\n", encoding="utf-8")
+            (xb_bat / "model_name").write_text("Xbox Wireless Controller\n", encoding="utf-8")
+            (xb_bat / "status").write_text("Discharging\n", encoding="utf-8")
+            (xb_bat / "capacity_level").write_text("Low\n", encoding="utf-8")
+
+            self.assertEqual(
+                read_controller_battery(
+                    "Xbox Wireless Controller", "045e:0b13", power_supply_root=ps_root
+                ),
+                (15, False),
+            )
+            (xb_bat / "capacity_level").write_text("Normal\n", encoding="utf-8")
+            self.assertEqual(
+                read_controller_battery(
+                    "Xbox Wireless Controller", "045e:0b13", power_supply_root=ps_root
+                ),
+                (50, False),
+            )
 
         assets = ensure_battery_sound_assets()
         for key in ("charging", "unplugged", "full", "low"):
