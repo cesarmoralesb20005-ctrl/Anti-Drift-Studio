@@ -2126,6 +2126,8 @@ class MainWindow(QMainWindow):
             return
         theme_key = str(tid)
         self.setStyleSheet(build_app_stylesheet(theme_key))
+        self.style().unpolish(self)
+        self.style().polish(self)
         self._profile_store.ui_theme = theme_key
         save_profile_store(self._profile_store)
 

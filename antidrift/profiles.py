@@ -11,6 +11,13 @@ from .config import AntiDriftConfig
 
 DEFAULT_PROFILES_PATH = Path.home() / ".config" / "xbox-antidrift-profiles.json"
 
+
+def default_profiles_path() -> Path:
+    """Return profiles JSON path, honoring XDG_CONFIG_HOME when set."""
+    cfg_root = os.environ.get("XDG_CONFIG_HOME", "").strip()
+    base = Path(cfg_root) if cfg_root else (Path.home() / ".config")
+    return base / "xbox-antidrift-profiles.json"
+
 _PROFILE_META_FIELDS = {"id", "name", "auto_process"}
 
 
@@ -210,9 +217,10 @@ def _profile_from_dict(item: dict, idx: int) -> GameProfile:
     return replace(defaults, **updates)
 
 
-def load_profile_store(path: Path = DEFAULT_PROFILES_PATH) -> ProfileStore:
+def load_profile_store(path: Path | None = None) -> ProfileStore:
     """Load saved profiles and UI preferences, creating defaults if missing."""
-    if not path.exists():
+    target = path if path is not None else default_profiles_path()
+    if not target.exists():
         return ProfileStore(
             active_id="default",
             auto_switch=False,
@@ -220,7 +228,7 @@ def load_profile_store(path: Path = DEFAULT_PROFILES_PATH) -> ProfileStore:
             profiles=default_profiles(),
         )
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(target.read_text(encoding="utf-8"))
         raw_profiles = data.get("profiles") or []
         profiles = [_profile_from_dict(item, idx) for idx, item in enumerate(raw_profiles)]
         if not profiles:
@@ -243,10 +251,11 @@ def load_profile_store(path: Path = DEFAULT_PROFILES_PATH) -> ProfileStore:
 
 
 def save_profile_store(
-    store: ProfileStore, path: Path = DEFAULT_PROFILES_PATH
+    store: ProfileStore, path: Path | None = None
 ) -> None:
     """Persist game profiles and preferences cleanly as JSON."""
-    path.parent.mkdir(parents=True, exist_ok=True)
+    target = path if path is not None else default_profiles_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "active_id": store.active_id,
         "auto_switch": store.auto_switch,
@@ -255,7 +264,7 @@ def save_profile_store(
         "ui_theme": store.ui_theme,
         "profiles": [asdict(p) for p in store.profiles],
     }
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    target.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 def _running_process_strings() -> list[str]:
