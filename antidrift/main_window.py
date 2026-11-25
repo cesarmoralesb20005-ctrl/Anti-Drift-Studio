@@ -65,6 +65,8 @@ from .clips.sound_fx import (
     play_battery_full_chime,
     play_battery_low_chime,
     play_battery_unplugged_chime,
+    play_controller_connected_chime,
+    play_controller_disconnected_chime,
 )
 from .mangohud.mh_tab import MangoHudTabWidget
 from .evdev_reader import (
@@ -522,6 +524,7 @@ class MainWindow(QMainWindow):
         self._bat_prev_level: int | None = None
         self._bat_low_notified = False
         self._bat_full_notified = False
+        self._conn_prev_connected: bool | None = None
         self._syncing_widgets = False
         self._service_active = False
         self._force_quit = False
@@ -2841,7 +2844,22 @@ class MainWindow(QMainWindow):
             self._macros_tab.update_detected_extra_keys(state.supported_extra_keys)
         if hasattr(self, "_clips_tab"):
             self._clips_tab.process_controller_state(state)
+        self._check_connection_sounds(state)
         self._check_battery_sounds(state)
+
+    def _check_connection_sounds(self, state: ControllerState) -> None:
+        is_conn = state.mode != "disconnected"
+        if self._conn_prev_connected is None:
+            self._conn_prev_connected = is_conn
+            return
+        if not self._conn_prev_connected and is_conn:
+            play_controller_connected_chime()
+        elif self._conn_prev_connected and not is_conn:
+            play_controller_disconnected_chime()
+            self._bat_prev_device_id = None
+            self._bat_prev_charging = None
+            self._bat_prev_level = None
+        self._conn_prev_connected = is_conn
 
     def _check_battery_sounds(self, state: ControllerState) -> None:
         if state.battery_level is None:

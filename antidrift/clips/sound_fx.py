@@ -17,6 +17,8 @@ BATTERY_CHARGING_WAV = SOUNDS_DIR / "battery_charging.wav"
 BATTERY_UNPLUGGED_WAV = SOUNDS_DIR / "battery_unplugged.wav"
 BATTERY_FULL_WAV = SOUNDS_DIR / "battery_full.wav"
 BATTERY_LOW_WAV = SOUNDS_DIR / "battery_low.wav"
+CONTROLLER_CONNECTED_WAV = SOUNDS_DIR / "controller_connected.wav"
+CONTROLLER_DISCONNECTED_WAV = SOUNDS_DIR / "controller_disconnected.wav"
 
 _SAMPLE_RATE = 44100
 
@@ -191,3 +193,45 @@ def play_battery_full_chime() -> None:
 def play_battery_low_chime() -> None:
     """Play soft double-tone alert when controller battery is low."""
     _play_battery_event("low")
+
+
+def ensure_connection_sound_assets() -> dict[str, Path]:
+    """Generate friendly controller connect/disconnect WAV chimes if missing."""
+    specs: dict[str, tuple[Path, list[tuple[float, float, float, float]], float]] = {
+        "connected": (
+            CONTROLLER_CONNECTED_WAV,
+            [(0.00, 0.11, 523.25, 0.72), (0.075, 0.17, 783.99, 0.85)],
+            0.24,
+        ),
+        "disconnected": (
+            CONTROLLER_DISCONNECTED_WAV,
+            [(0.00, 0.11, 783.99, 0.72), (0.075, 0.17, 523.25, 0.65)],
+            0.22,
+        ),
+    }
+    out: dict[str, Path] = {}
+    for key, (path, notes, vol) in specs.items():
+        if not path.exists():
+            _synth_notes_wav(path, notes, volume=vol)
+        out[key] = path
+    return out
+
+
+def play_controller_connected_chime() -> None:
+    """Play friendly chime when a controller connects."""
+    try:
+        wav = ensure_connection_sound_assets().get("connected")
+        if wav is not None:
+            _play_wav_async(wav)
+    except OSError:
+        pass
+
+
+def play_controller_disconnected_chime() -> None:
+    """Play gentle chime when a controller disconnects."""
+    try:
+        wav = ensure_connection_sound_assets().get("disconnected")
+        if wav is not None:
+            _play_wav_async(wav)
+    except OSError:
+        pass

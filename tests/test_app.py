@@ -2158,9 +2158,18 @@ class GameSirExtraButtonsTests(unittest.TestCase):
     def test_battery_charging_indicator_and_sound_transitions(self) -> None:
         from unittest.mock import patch
         from PySide6.QtWidgets import QApplication
-        from antidrift.clips.sound_fx import ensure_battery_sound_assets
+        from antidrift.clips.sound_fx import (
+            ensure_battery_sound_assets,
+            ensure_connection_sound_assets,
+        )
         from antidrift.evdev_reader import ControllerState, read_controller_battery
         from antidrift.main_window import MainWindow
+
+        conn_assets = ensure_connection_sound_assets()
+        for key in ("connected", "disconnected"):
+            self.assertIn(key, conn_assets)
+            self.assertTrue(conn_assets[key].exists())
+            self.assertGreater(conn_assets[key].stat().st_size, 100)
 
         with tempfile.TemporaryDirectory() as ps_tmp:
             ps_root = Path(ps_tmp)
@@ -2229,6 +2238,17 @@ class GameSirExtraButtonsTests(unittest.TestCase):
                     feed(100, True)  # should not spam full alert twice
                     feed(100, False) # unplugged
                     self.assertEqual(events, ["low", "charging", "full", "unplugged"])
+
+                conn_events: list[str] = []
+                with (
+                    patch("antidrift.main_window.play_controller_connected_chime", side_effect=lambda: conn_events.append("connected")),
+                    patch("antidrift.main_window.play_controller_disconnected_chime", side_effect=lambda: conn_events.append("disconnected")),
+                ):
+                    win._check_connection_sounds(ControllerState(mode="direct"))
+                    win._check_connection_sounds(ControllerState(mode="disconnected"))
+                    win._check_connection_sounds(ControllerState(mode="disconnected"))
+                    win._check_connection_sounds(ControllerState(mode="virtual"))
+                    self.assertEqual(conn_events, ["disconnected", "connected"])
                 app.processEvents()
                 win.close()
             finally:
