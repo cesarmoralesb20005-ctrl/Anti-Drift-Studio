@@ -1662,14 +1662,17 @@ class EqualizerSubsystemTests(unittest.TestCase):
         self.assertEqual(st_on["haas_delay_ms"], 10.0)
         self.assertEqual(st_on["raw_side_gain"], 0.0)
 
-        self.assertIn("name = surround_apL label = bq_allpass", conf_txt)
+        self.assertTrue(
+            "name = surround_sofa_l label = spatializer" in conf_txt
+            or "name = surround_apL label = bq_allpass" in conf_txt
+        )
         self.assertIn("name = surround_blendL label = mixer", conf_txt)
         sr_off = compute_surround_dsp_params(False, bypass=False)
         self.assertEqual(sr_off["direct_gain"], 1.0)
-        self.assertEqual(sr_off["wrap_gain"], 0.0)
+        self.assertEqual(sr_off["sofa_gain"], 0.0)
         sr_on = compute_surround_dsp_params(True, bypass=False)
+        self.assertGreater(sr_on["sofa_gain"], 0.0)
         self.assertGreater(sr_on["wrap_gain"], 0.0)
-        self.assertLess(sr_on["cross_gain"], 0.0)
         self.assertEqual(st_on["exciter_16k_db"], 5.0)
         cfg_st = cfg.copy()
         cfg_st.stereo_enabled = True

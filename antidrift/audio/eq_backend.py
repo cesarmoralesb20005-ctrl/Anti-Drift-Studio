@@ -27,6 +27,25 @@ EQ_SINK_DESC = "Anti-Drift Studio EQ"
 EQ_DIR = Path.home() / ".config" / "antidrift-studio"
 EQ_CONF_PATH = EQ_DIR / "eq-filter-chain.conf"
 EQ_PID_PATH = EQ_DIR / "eq-pipewire.pid"
+_SOFA_CANDIDATES = (
+    Path("/usr/share/libmysofa/MIT_KEMAR_normal_pinna.sofa"),
+    Path("/usr/share/libmysofa/default.sofa"),
+)
+_SOFA_PLUGIN_CANDIDATES = (
+    Path("/usr/lib/x86_64-linux-gnu/spa-0.2/filter-graph/libspa-filter-graph-plugin-sofa.so"),
+    Path("/usr/lib/spa-0.2/filter-graph/libspa-filter-graph-plugin-sofa.so"),
+    Path("/usr/lib64/spa-0.2/filter-graph/libspa-filter-graph-plugin-sofa.so"),
+)
+
+
+def find_sofa_hrtf_path() -> str | None:
+    """Return path to installed SOFA HRTF dataset if PipeWire sofa plugin is available."""
+    if not any(p.exists() for p in _SOFA_PLUGIN_CANDIDATES):
+        return None
+    for cand in _SOFA_CANDIDATES:
+        if cand.exists():
+            return str(cand)
+    return None
 EQ_SERVICE_NAME = "antidrift-eq.service"
 EQ_SERVICE_PATH = Path.home() / ".config" / "systemd" / "user" / EQ_SERVICE_NAME
 
@@ -348,19 +367,36 @@ def generate_pipewire_eq_conf(cfg: EqualizerConfig, target_sink: str = "") -> st
         f'                    {{ type = builtin name = st_side_blend label = mixer control = {{ "Gain 1" = {st["side_gain"]:.4f} "Gain 2" = {st["haas_gain"]:.4f} "Gain 3" = {st["raw_side_gain"]:.4f} }} }}',
         '                    { type = builtin name = st_outL label = mixer control = { "Gain 1" = 1.0 "Gain 2" = 1.0 } }',
         '                    { type = builtin name = st_outR label = mixer control = { "Gain 1" = 1.0 "Gain 2" = -1.0 } }',
-        '                    { type = builtin name = surround_apL label = bq_allpass control = { "Freq" = 520.0 "Q" = 0.707 } }',
-        '                    { type = builtin name = surround_apR label = bq_allpass control = { "Freq" = 1900.0 "Q" = 0.707 } }',
-        '                    { type = builtin name = surround_wrapDelL label = delay config = { "max-delay" = 1 } control = { "Delay (s)" = 0.0180 "Feedback" = 0.0 "Feedforward" = 0.0 } }',
-        '                    { type = builtin name = surround_wrapDelR label = delay config = { "max-delay" = 1 } control = { "Delay (s)" = 0.0290 "Feedback" = 0.0 "Feedforward" = 0.0 } }',
-        '                    { type = builtin name = surround_delL label = delay config = { "max-delay" = 1 } control = { "Delay (s)" = 0.0110 "Feedback" = 0.0 "Feedforward" = 0.0 } }',
-        '                    { type = builtin name = surround_delR label = delay config = { "max-delay" = 1 } control = { "Delay (s)" = 0.0080 "Feedback" = 0.0 "Feedforward" = 0.0 } }',
-        '                    { type = builtin name = surround_lpL label = bq_lowpass control = { "Freq" = 5500.0 "Q" = 0.707 } }',
-        '                    { type = builtin name = surround_lpR label = bq_lowpass control = { "Freq" = 5500.0 "Q" = 0.707 } }',
-        f'                    {{ type = builtin name = surround_blendL label = mixer control = {{ "Gain 1" = {sr["direct_gain"]:.4f} "Gain 2" = {sr["wrap_gain"]:.4f} "Gain 3" = {sr["cross_gain"]:.4f} }} }}',
-        f'                    {{ type = builtin name = surround_blendR label = mixer control = {{ "Gain 1" = {sr["direct_gain"]:.4f} "Gain 2" = {sr["wrap_gain_r"]:.4f} "Gain 3" = {sr["cross_gain_r"]:.4f} }} }}',
-        f'                    {{ type = builtin name = preamp label = linear control = {{ "Mult" = {mult:.6f} "Add" = 0.0 }} }}',
-        f'                    {{ type = builtin name = preampR label = linear control = {{ "Mult" = {mult:.6f} "Add" = 0.0 }} }}',
     ]
+    sofa_file = find_sofa_hrtf_path()
+    if sofa_file:
+        nodes_lines.extend(
+            [
+                f'                    {{ type = sofa name = surround_sofa_l label = spatializer config = {{ "filename" = "{sofa_file}" "normalize" = true }} control = {{ "Azimuth" = 105.0 "Elevation" = 12.0 "Radius" = 1.5 }} }}',
+                f'                    {{ type = sofa name = surround_sofa_r label = spatializer config = {{ "filename" = "{sofa_file}" "normalize" = true }} control = {{ "Azimuth" = -105.0 "Elevation" = 12.0 "Radius" = 1.5 }} }}',
+                f'                    {{ type = builtin name = surround_blendL label = mixer control = {{ "Gain 1" = {sr["direct_gain"]:.4f} "Gain 2" = {sr["sofa_gain"]:.4f} "Gain 3" = {sr["sofa_gain"]:.4f} }} }}',
+                f'                    {{ type = builtin name = surround_blendR label = mixer control = {{ "Gain 1" = {sr["direct_gain"]:.4f} "Gain 2" = {sr["sofa_gain"]:.4f} "Gain 3" = {sr["sofa_gain"]:.4f} }} }}',
+                f'                    {{ type = builtin name = preamp label = linear control = {{ "Mult" = {mult:.6f} "Add" = 0.0 }} }}',
+                f'                    {{ type = builtin name = preampR label = linear control = {{ "Mult" = {mult:.6f} "Add" = 0.0 }} }}',
+            ]
+        )
+    else:
+        nodes_lines.extend(
+            [
+                '                    { type = builtin name = surround_apL label = bq_allpass control = { "Freq" = 520.0 "Q" = 0.707 } }',
+                '                    { type = builtin name = surround_apR label = bq_allpass control = { "Freq" = 1900.0 "Q" = 0.707 } }',
+                '                    { type = builtin name = surround_wrapDelL label = delay config = { "max-delay" = 1 } control = { "Delay (s)" = 0.0180 "Feedback" = 0.0 "Feedforward" = 0.0 } }',
+                '                    { type = builtin name = surround_wrapDelR label = delay config = { "max-delay" = 1 } control = { "Delay (s)" = 0.0290 "Feedback" = 0.0 "Feedforward" = 0.0 } }',
+                '                    { type = builtin name = surround_delL label = delay config = { "max-delay" = 1 } control = { "Delay (s)" = 0.0110 "Feedback" = 0.0 "Feedforward" = 0.0 } }',
+                '                    { type = builtin name = surround_delR label = delay config = { "max-delay" = 1 } control = { "Delay (s)" = 0.0080 "Feedback" = 0.0 "Feedforward" = 0.0 } }',
+                '                    { type = builtin name = surround_lpL label = bq_lowpass control = { "Freq" = 5500.0 "Q" = 0.707 } }',
+                '                    { type = builtin name = surround_lpR label = bq_lowpass control = { "Freq" = 5500.0 "Q" = 0.707 } }',
+                f'                    {{ type = builtin name = surround_blendL label = mixer control = {{ "Gain 1" = {sr["direct_gain"]:.4f} "Gain 2" = {sr["wrap_gain"]:.4f} "Gain 3" = {sr["cross_gain"]:.4f} }} }}',
+                f'                    {{ type = builtin name = surround_blendR label = mixer control = {{ "Gain 1" = {sr["direct_gain"]:.4f} "Gain 2" = {sr["wrap_gain_r"]:.4f} "Gain 3" = {sr["cross_gain_r"]:.4f} }} }}',
+                f'                    {{ type = builtin name = preamp label = linear control = {{ "Mult" = {mult:.6f} "Add" = 0.0 }} }}',
+                f'                    {{ type = builtin name = preampR label = linear control = {{ "Mult" = {mult:.6f} "Add" = 0.0 }} }}',
+            ]
+        )
 
     links_lines = [
         '                    { output = "inL:Out" input = "st_mid:In 1" }',
@@ -379,25 +415,47 @@ def generate_pipewire_eq_conf(cfg: EqualizerConfig, target_sink: str = "") -> st
         '                    { output = "st_side_blend:Out" input = "st_outL:In 2" }',
         '                    { output = "st_mid:Out" input = "st_outR:In 1" }',
         '                    { output = "st_side_blend:Out" input = "st_outR:In 2" }',
-        '                    { output = "st_side_blend:Out" input = "surround_apL:In" }',
-        '                    { output = "st_side_blend:Out" input = "surround_apR:In" }',
-        '                    { output = "surround_apL:Out" input = "surround_wrapDelL:In" }',
-        '                    { output = "surround_apR:Out" input = "surround_wrapDelR:In" }',
-        '                    { output = "surround_wrapDelL:Out" input = "surround_lpL:In" }',
-        '                    { output = "surround_wrapDelR:Out" input = "surround_lpR:In" }',
-        '                    { output = "surround_lpL:Out" input = "surround_delL:In" }',
-        '                    { output = "surround_lpR:Out" input = "surround_delR:In" }',
-        '                    { output = "st_outL:Out" input = "surround_blendL:In 1" }',
-        '                    { output = "surround_lpL:Out" input = "surround_blendL:In 2" }',
-        '                    { output = "surround_delR:Out" input = "surround_blendL:In 3" }',
-        '                    { output = "st_outR:Out" input = "surround_blendR:In 1" }',
-        '                    { output = "surround_lpR:Out" input = "surround_blendR:In 2" }',
-        '                    { output = "surround_delL:Out" input = "surround_blendR:In 3" }',
-        '                    { output = "surround_blendL:Out" input = "preamp:In" }',
-        '                    { output = "surround_blendR:Out" input = "preampR:In" }',
-        '                    { output = "preamp:Out" input = "b1:In" }',
-        '                    { output = "preampR:Out" input = "b1R:In" }',
     ]
+    if sofa_file:
+        links_lines.extend(
+            [
+                '                    { output = "st_outL:Out" input = "surround_sofa_l:In" }',
+                '                    { output = "st_outR:Out" input = "surround_sofa_r:In" }',
+                '                    { output = "st_outL:Out" input = "surround_blendL:In 1" }',
+                '                    { output = "surround_sofa_l:Out L" input = "surround_blendL:In 2" }',
+                '                    { output = "surround_sofa_r:Out L" input = "surround_blendL:In 3" }',
+                '                    { output = "st_outR:Out" input = "surround_blendR:In 1" }',
+                '                    { output = "surround_sofa_l:Out R" input = "surround_blendR:In 2" }',
+                '                    { output = "surround_sofa_r:Out R" input = "surround_blendR:In 3" }',
+                '                    { output = "surround_blendL:Out" input = "preamp:In" }',
+                '                    { output = "surround_blendR:Out" input = "preampR:In" }',
+                '                    { output = "preamp:Out" input = "b1:In" }',
+                '                    { output = "preampR:Out" input = "b1R:In" }',
+            ]
+        )
+    else:
+        links_lines.extend(
+            [
+                '                    { output = "st_side_blend:Out" input = "surround_apL:In" }',
+                '                    { output = "st_side_blend:Out" input = "surround_apR:In" }',
+                '                    { output = "surround_apL:Out" input = "surround_wrapDelL:In" }',
+                '                    { output = "surround_apR:Out" input = "surround_wrapDelR:In" }',
+                '                    { output = "surround_wrapDelL:Out" input = "surround_lpL:In" }',
+                '                    { output = "surround_wrapDelR:Out" input = "surround_lpR:In" }',
+                '                    { output = "surround_lpL:Out" input = "surround_delL:In" }',
+                '                    { output = "surround_lpR:Out" input = "surround_delR:In" }',
+                '                    { output = "st_outL:Out" input = "surround_blendL:In 1" }',
+                '                    { output = "surround_lpL:Out" input = "surround_blendL:In 2" }',
+                '                    { output = "surround_delR:Out" input = "surround_blendL:In 3" }',
+                '                    { output = "st_outR:Out" input = "surround_blendR:In 1" }',
+                '                    { output = "surround_lpR:Out" input = "surround_blendR:In 2" }',
+                '                    { output = "surround_delL:Out" input = "surround_blendR:In 3" }',
+                '                    { output = "surround_blendL:Out" input = "preamp:In" }',
+                '                    { output = "surround_blendR:Out" input = "preampR:In" }',
+                '                    { output = "preamp:Out" input = "b1:In" }',
+                '                    { output = "preampR:Out" input = "b1R:In" }',
+            ]
+        )
 
     for idx, (freq, ftype, q_val, gain) in enumerate(
         zip(EQ_BAND_FREQS, EQ_BAND_TYPES, EQ_BAND_Q, gains), start=1
@@ -492,7 +550,7 @@ def _node_has_stereo_graph(obj: dict | None) -> bool:
     for entry in props_list:
         if isinstance(entry, dict):
             params = entry.get("params") or []
-            if "surround_wrapDelL:Delay (s)" in params:
+            if "surround_sofa_l:Azimuth" in params or "surround_wrapDelL:Delay (s)" in params:
                 return True
     return False
 
@@ -527,6 +585,12 @@ def apply_eq_live_params(cfg: EqualizerConfig) -> bool:
     st = compute_stereo_dsp_params(cfg.stereo_enabled, cfg.stereo_width, bypass=cfg.bypass)
     sr = compute_surround_dsp_params(cfg.surround_enabled, bypass=cfg.bypass)
 
+    sofa_file = find_sofa_hrtf_path()
+    g2_l = sr["sofa_gain"] if sofa_file else sr["wrap_gain"]
+    g3_l = sr["sofa_gain"] if sofa_file else sr["cross_gain"]
+    g2_r = sr["sofa_gain"] if sofa_file else sr["wrap_gain_r"]
+    g3_r = sr["sofa_gain"] if sofa_file else sr["cross_gain_r"]
+
     tokens = [
         f'"st_exc_4k:Gain" {st["exciter_4k_db"]:.2f}',
         f'"st_exc_8k:Gain" {st["exciter_8k_db"]:.2f}',
@@ -536,11 +600,11 @@ def apply_eq_live_params(cfg: EqualizerConfig) -> bool:
         f'"st_side_blend:Gain 2" {st["haas_gain"]:.4f}',
         f'"st_side_blend:Gain 3" {st["raw_side_gain"]:.4f}',
         f'"surround_blendL:Gain 1" {sr["direct_gain"]:.4f}',
-        f'"surround_blendL:Gain 2" {sr["wrap_gain"]:.4f}',
-        f'"surround_blendL:Gain 3" {sr["cross_gain"]:.4f}',
+        f'"surround_blendL:Gain 2" {g2_l:.4f}',
+        f'"surround_blendL:Gain 3" {g3_l:.4f}',
         f'"surround_blendR:Gain 1" {sr["direct_gain"]:.4f}',
-        f'"surround_blendR:Gain 2" {sr["wrap_gain_r"]:.4f}',
-        f'"surround_blendR:Gain 3" {sr["cross_gain_r"]:.4f}',
+        f'"surround_blendR:Gain 2" {g2_r:.4f}',
+        f'"surround_blendR:Gain 3" {g3_r:.4f}',
         f'"preamp:Mult" {mult:.6f}',
         f'"preampR:Mult" {mult:.6f}',
     ]
