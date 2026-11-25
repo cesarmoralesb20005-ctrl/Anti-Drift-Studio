@@ -1155,8 +1155,9 @@ class EqTabWidget(QWidget):
             if self._orbit_nid is None:
                 return
         self._orbit_angle_deg = (self._orbit_angle_deg + 7.5) % 360.0
+        # Symmetric front -> ears -> behind -> ears -> front sweep (keeps vocals centered)
         az_l = ((self._orbit_angle_deg + 180.0) % 360.0) - 180.0
-        az_r = ((self._orbit_angle_deg + 360.0) % 360.0) - 180.0
+        az_r = -az_l
         # Gentle elevation breath: +6 deg in front (0 deg), +22 deg behind (±180 deg)
         elev = 14.0 - 8.0 * math.cos(math.radians(self._orbit_angle_deg))
         if not set_surround_orbit_azimuth(self._orbit_nid, az_l, az_r, elev):
