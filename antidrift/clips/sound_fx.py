@@ -22,32 +22,75 @@ CONTROLLER_DISCONNECTED_WAV = SOUNDS_DIR / "controller_disconnected.wav"
 
 _SAMPLE_RATE = 44100
 
+SOUND_PROFILES: tuple[tuple[str, str], ...] = (
+    ("frutiger", "Frutiger Aero (Xbox 360)"),
+    ("switch", "Nintendo Switch"),
+    ("ps2", "Play Retro (PS2)"),
+    ("suave", "Suave (Clásico)"),
+)
+_VALID_SOUND_PROFILES = {k for k, _ in SOUND_PROFILES}
+_ACTIVE_SOUND_PROFILE = "frutiger"
+
+
+def get_sound_profile() -> str:
+    """Return currently active sound effect theme id."""
+    return _ACTIVE_SOUND_PROFILE
+
+
+def set_sound_profile(profile_id: str) -> str:
+    """Set active sound effect theme id (falling back to 'frutiger' if unknown)."""
+    global _ACTIVE_SOUND_PROFILE
+    norm = (profile_id or "").strip().lower()
+    _ACTIVE_SOUND_PROFILE = norm if norm in _VALID_SOUND_PROFILES else "frutiger"
+    return _ACTIVE_SOUND_PROFILE
+
 
 def _synth_notes_wav(
     path: Path,
     notes: list[tuple[float, float, float, float]],
     volume: float = 0.30,
+    timbre: str = "warm",
 ) -> Path:
     """Synthesize smooth chime WAV from (start_sec, dur_sec, freq_hz, rel_amp) notes."""
-    total_sec = max(s + d for s, d, _, _ in notes) + 0.05
+    total_sec = max(s + d for s, d, _, _ in notes) + 0.06
     total_frames = int(total_sec * _SAMPLE_RATE)
     buf = [0.0] * total_frames
 
     for start_sec, dur_sec, freq_hz, rel_amp in notes:
         i0 = int(start_sec * _SAMPLE_RATE)
         n = int(dur_sec * _SAMPLE_RATE)
-        attack = max(1, int(0.010 * _SAMPLE_RATE))
+        attack_sec = 0.003 if timbre == "switch" else (0.018 if timbre == "ps2" else 0.010)
+        decay_k = 7.5 if timbre == "switch" else (3.6 if timbre == "ps2" else 5.2)
+        attack = max(1, int(attack_sec * _SAMPLE_RATE))
         for k in range(n):
             idx = i0 + k
             if idx >= total_frames:
                 break
             t = k / float(_SAMPLE_RATE)
-            env = min(1.0, k / float(attack)) * math.exp(-5.5 * (t / max(0.05, dur_sec)))
-            # Warm fundamental + gentle octave overtone
-            sample = (
-                math.sin(2.0 * math.pi * freq_hz * t) * 0.82
-                + math.sin(2.0 * math.pi * (freq_hz * 2.0) * t) * 0.18
-            )
+            env = min(1.0, k / float(attack)) * math.exp(-decay_k * (t / max(0.05, dur_sec)))
+            if timbre == "frutiger":
+                # Glassy Xbox 360 marimba/bell blend
+                sample = (
+                    math.sin(2.0 * math.pi * freq_hz * t) * 0.68
+                    + math.sin(2.0 * math.pi * (freq_hz * 2.0) * t) * 0.24
+                    + math.sin(2.0 * math.pi * (freq_hz * 3.0) * t) * 0.08 * math.exp(-12.0 * t)
+                )
+            elif timbre == "switch":
+                # Snappy Joy-Con click transient + clean bright pop
+                click = math.sin(2.0 * math.pi * (freq_hz * 2.5) * t) * math.exp(-85.0 * t) * 0.35
+                sample = math.sin(2.0 * math.pi * freq_hz * t) * 0.85 + click
+            elif timbre == "ps2":
+                # Atmospheric crystalline PS2 synth pad
+                sample = (
+                    math.sin(2.0 * math.pi * freq_hz * t) * 0.62
+                    + math.sin(2.0 * math.pi * (freq_hz * 1.5) * t) * 0.20
+                    + math.sin(2.0 * math.pi * (freq_hz * 2.0) * t) * 0.18
+                )
+            else:
+                sample = (
+                    math.sin(2.0 * math.pi * freq_hz * t) * 0.82
+                    + math.sin(2.0 * math.pi * (freq_hz * 2.0) * t) * 0.18
+                )
             buf[idx] += sample * env * rel_amp
 
     pcm = array.array("h")
@@ -128,47 +171,66 @@ def play_clip_saved_chime() -> None:
         pass
 
 
-def ensure_battery_sound_assets() -> dict[str, Path]:
-    """Generate gentle battery notification WAV chimes on disk if missing."""
-    specs: dict[str, tuple[Path, list[tuple[float, float, float, float]], float]] = {
-        "charging": (
-            BATTERY_CHARGING_WAV,
-            [(0.00, 0.12, 659.25, 0.70), (0.08, 0.18, 880.00, 0.85)],
-            0.24,
-        ),
-        "unplugged": (
-            BATTERY_UNPLUGGED_WAV,
-            [(0.00, 0.12, 783.99, 0.75), (0.08, 0.18, 587.33, 0.65)],
-            0.22,
-        ),
-        "full": (
-            BATTERY_FULL_WAV,
-            [
-                (0.00, 0.14, 523.25, 0.65),
-                (0.07, 0.14, 659.25, 0.75),
-                (0.14, 0.16, 783.99, 0.85),
-                (0.21, 0.22, 1046.50, 0.85),
-            ],
-            0.26,
-        ),
-        "low": (
-            BATTERY_LOW_WAV,
-            [(0.00, 0.14, 440.00, 0.75), (0.11, 0.20, 349.23, 0.80)],
-            0.24,
-        ),
-    }
+_THEME_SPECS: dict[str, dict[str, tuple[list[tuple[float, float, float, float]], float]]] = {
+    "frutiger": {
+        "charging": ([(0.00, 0.14, 659.25, 0.72), (0.07, 0.16, 880.00, 0.80), (0.14, 0.24, 1108.73, 0.85)], 0.25),
+        "unplugged": ([(0.00, 0.14, 1108.73, 0.72), (0.08, 0.20, 880.00, 0.65)], 0.22),
+        "full": ([(0.00, 0.15, 587.33, 0.68), (0.07, 0.16, 880.00, 0.78), (0.14, 0.18, 1174.66, 0.86), (0.21, 0.26, 1479.98, 0.88)], 0.27),
+        "low": ([(0.00, 0.16, 369.99, 0.75), (0.13, 0.22, 293.66, 0.80)], 0.24),
+        "connected": ([(0.00, 0.13, 587.33, 0.68), (0.065, 0.15, 739.99, 0.76), (0.13, 0.18, 880.00, 0.84), (0.195, 0.25, 1174.66, 0.88)], 0.25),
+        "disconnected": ([(0.00, 0.13, 880.00, 0.74), (0.07, 0.15, 739.99, 0.68), (0.14, 0.22, 587.33, 0.60)], 0.22),
+    },
+    "switch": {
+        "charging": ([(0.00, 0.08, 659.25, 0.75), (0.06, 0.14, 987.77, 0.88)], 0.24),
+        "unplugged": ([(0.00, 0.08, 987.77, 0.72), (0.06, 0.13, 659.25, 0.65)], 0.22),
+        "full": ([(0.00, 0.09, 523.25, 0.70), (0.06, 0.09, 659.25, 0.76), (0.12, 0.10, 783.99, 0.82), (0.18, 0.18, 1046.50, 0.90)], 0.26),
+        "low": ([(0.00, 0.10, 659.25, 0.75), (0.10, 0.14, 523.25, 0.80)], 0.24),
+        "connected": ([(0.00, 0.06, 783.99, 0.78), (0.055, 0.13, 1046.50, 0.90)], 0.25),
+        "disconnected": ([(0.00, 0.07, 1046.50, 0.72), (0.06, 0.13, 783.99, 0.66)], 0.22),
+    },
+    "ps2": {
+        "charging": ([(0.00, 0.20, 329.63, 0.70), (0.10, 0.22, 493.88, 0.78), (0.20, 0.28, 659.25, 0.82)], 0.25),
+        "unplugged": ([(0.00, 0.20, 659.25, 0.70), (0.11, 0.26, 493.88, 0.62)], 0.22),
+        "full": ([(0.00, 0.22, 261.63, 0.68), (0.09, 0.22, 392.00, 0.76), (0.18, 0.24, 587.33, 0.82), (0.27, 0.32, 783.99, 0.85)], 0.26),
+        "low": ([(0.00, 0.20, 220.00, 0.75), (0.16, 0.26, 164.81, 0.80)], 0.24),
+        "connected": ([(0.00, 0.22, 261.63, 0.68), (0.08, 0.24, 392.00, 0.76), (0.16, 0.26, 587.33, 0.82), (0.24, 0.32, 880.00, 0.84)], 0.25),
+        "disconnected": ([(0.00, 0.20, 880.00, 0.70), (0.10, 0.22, 587.33, 0.64), (0.20, 0.28, 392.00, 0.58)], 0.22),
+    },
+    "suave": {
+        "charging": ([(0.00, 0.12, 659.25, 0.70), (0.08, 0.18, 880.00, 0.85)], 0.24),
+        "unplugged": ([(0.00, 0.12, 783.99, 0.75), (0.08, 0.18, 587.33, 0.65)], 0.22),
+        "full": ([(0.00, 0.14, 523.25, 0.65), (0.07, 0.14, 659.25, 0.75), (0.14, 0.16, 783.99, 0.85), (0.21, 0.22, 1046.50, 0.85)], 0.26),
+        "low": ([(0.00, 0.14, 440.00, 0.75), (0.11, 0.20, 349.23, 0.80)], 0.24),
+        "connected": ([(0.00, 0.11, 523.25, 0.72), (0.075, 0.17, 783.99, 0.85)], 0.24),
+        "disconnected": ([(0.00, 0.11, 783.99, 0.72), (0.075, 0.17, 523.25, 0.65)], 0.22),
+    },
+}
+
+
+def ensure_profile_sound_assets(profile_id: str | None = None) -> dict[str, Path]:
+    """Generate WAV chimes for the requested sound profile on disk if missing."""
+    pid = (profile_id or _ACTIVE_SOUND_PROFILE).strip().lower()
+    if pid not in _THEME_SPECS:
+        pid = "frutiger"
+    specs = _THEME_SPECS[pid]
     out: dict[str, Path] = {}
-    for key, (path, notes, vol) in specs.items():
-        if not path.exists():
-            _synth_notes_wav(path, notes, volume=vol)
-        out[key] = path
+    for key, (notes, vol) in specs.items():
+        wav = SOUNDS_DIR / pid / f"{key}.wav"
+        if not wav.exists():
+            _synth_notes_wav(wav, notes, volume=vol, timbre=pid)
+        out[key] = wav
     return out
+
+
+def ensure_battery_sound_assets(profile_id: str | None = None) -> dict[str, Path]:
+    """Generate battery notification WAV chimes for the active sound profile."""
+    all_assets = ensure_profile_sound_assets(profile_id)
+    return {k: all_assets[k] for k in ("charging", "unplugged", "full", "low")}
 
 
 def _play_battery_event(kind: str) -> None:
     try:
-        assets = ensure_battery_sound_assets()
-        wav = assets.get(kind)
+        wav = ensure_profile_sound_assets().get(kind)
         if wav is not None:
             _play_wav_async(wav)
     except OSError:
@@ -195,43 +257,17 @@ def play_battery_low_chime() -> None:
     _play_battery_event("low")
 
 
-def ensure_connection_sound_assets() -> dict[str, Path]:
-    """Generate friendly controller connect/disconnect WAV chimes if missing."""
-    specs: dict[str, tuple[Path, list[tuple[float, float, float, float]], float]] = {
-        "connected": (
-            CONTROLLER_CONNECTED_WAV,
-            [(0.00, 0.11, 523.25, 0.72), (0.075, 0.17, 783.99, 0.85)],
-            0.24,
-        ),
-        "disconnected": (
-            CONTROLLER_DISCONNECTED_WAV,
-            [(0.00, 0.11, 783.99, 0.72), (0.075, 0.17, 523.25, 0.65)],
-            0.22,
-        ),
-    }
-    out: dict[str, Path] = {}
-    for key, (path, notes, vol) in specs.items():
-        if not path.exists():
-            _synth_notes_wav(path, notes, volume=vol)
-        out[key] = path
-    return out
+def ensure_connection_sound_assets(profile_id: str | None = None) -> dict[str, Path]:
+    """Generate controller connect/disconnect WAV chimes for the active sound profile."""
+    all_assets = ensure_profile_sound_assets(profile_id)
+    return {k: all_assets[k] for k in ("connected", "disconnected")}
 
 
 def play_controller_connected_chime() -> None:
     """Play friendly chime when a controller connects."""
-    try:
-        wav = ensure_connection_sound_assets().get("connected")
-        if wav is not None:
-            _play_wav_async(wav)
-    except OSError:
-        pass
+    _play_battery_event("connected")
 
 
 def play_controller_disconnected_chime() -> None:
     """Play gentle chime when a controller disconnects."""
-    try:
-        wav = ensure_connection_sound_assets().get("disconnected")
-        if wav is not None:
-            _play_wav_async(wav)
-    except OSError:
-        pass
+    _play_battery_event("disconnected")

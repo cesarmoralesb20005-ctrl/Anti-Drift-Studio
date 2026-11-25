@@ -61,12 +61,14 @@ from .deps import (
     install_optional_dependency,
 )
 from .clips.sound_fx import (
+    SOUND_PROFILES,
     play_battery_charging_chime,
     play_battery_full_chime,
     play_battery_low_chime,
     play_battery_unplugged_chime,
     play_controller_connected_chime,
     play_controller_disconnected_chime,
+    set_sound_profile,
 )
 from .mangohud.mh_tab import MangoHudTabWidget
 from .evdev_reader import (
@@ -518,6 +520,7 @@ class MainWindow(QMainWindow):
         self._focused_stable_id: str = ""
         self._connected_devs_cache = []
         self._profile_store: ProfileStore = load_profile_store()
+        set_sound_profile(self._profile_store.sound_profile)
         self._last_state = ControllerState()
         self._bat_prev_device_id: str | None = None
         self._bat_prev_charging: bool | None = None
@@ -1669,6 +1672,25 @@ class MainWindow(QMainWindow):
         self._tray_chk.setChecked(self._profile_store.minimize_to_tray)
         self._tray_chk.toggled.connect(self._on_toggle_minimize_to_tray)
         d_lay.addWidget(self._tray_chk)
+
+        sfx_row = QHBoxLayout()
+        sfx_row.addWidget(QLabel("Perfil de efectos de sonido:"))
+        self._sound_profile_combo = QComboBox()
+        for pid, label in SOUND_PROFILES:
+            self._sound_profile_combo.addItem(label, pid)
+        cur_idx = self._sound_profile_combo.findData(self._profile_store.sound_profile)
+        if cur_idx >= 0:
+            self._sound_profile_combo.setCurrentIndex(cur_idx)
+        self._sound_profile_combo.currentIndexChanged.connect(
+            self._on_sound_profile_changed
+        )
+        sfx_row.addWidget(self._sound_profile_combo, 1)
+        btn_test_sfx = QPushButton("Probar")
+        btn_test_sfx.setObjectName("MiniPill")
+        btn_test_sfx.setToolTip("Escuchar un ejemplo del perfil de sonido seleccionado")
+        btn_test_sfx.clicked.connect(play_controller_connected_chime)
+        sfx_row.addWidget(btn_test_sfx)
+        d_lay.addLayout(sfx_row)
         lay.addWidget(dev_card)
 
         health_card = QFrame()
@@ -1954,6 +1976,14 @@ class MainWindow(QMainWindow):
 
     def _on_toggle_minimize_to_tray(self, checked: bool) -> None:
         self._profile_store.minimize_to_tray = checked
+        save_profile_store(self._profile_store)
+
+    def _on_sound_profile_changed(self, _idx: int) -> None:
+        pid = self._sound_profile_combo.currentData()
+        if not pid:
+            return
+        active = set_sound_profile(str(pid))
+        self._profile_store.sound_profile = active
         save_profile_store(self._profile_store)
 
     # ── Circularity & Wear Test ──

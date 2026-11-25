@@ -93,6 +93,7 @@ class ProfileStore:
     auto_switch: bool
     minimize_to_tray: bool
     profiles: list[GameProfile]
+    sound_profile: str = "frutiger"
 
 
 def default_profiles() -> list[GameProfile]:
@@ -228,6 +229,7 @@ def load_profile_store(path: Path = DEFAULT_PROFILES_PATH) -> ProfileStore:
             auto_switch=bool(data.get("auto_switch", False)),
             minimize_to_tray=bool(data.get("minimize_to_tray", False)),
             profiles=profiles,
+            sound_profile=str(data.get("sound_profile", "frutiger") or "frutiger"),
         )
     except (OSError, ValueError, TypeError):
         return ProfileStore(
@@ -247,6 +249,7 @@ def save_profile_store(
         "active_id": store.active_id,
         "auto_switch": store.auto_switch,
         "minimize_to_tray": store.minimize_to_tray,
+        "sound_profile": store.sound_profile,
         "profiles": [asdict(p) for p in store.profiles],
     }
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")

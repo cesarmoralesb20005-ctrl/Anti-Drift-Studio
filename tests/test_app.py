@@ -2249,6 +2249,32 @@ class GameSirExtraButtonsTests(unittest.TestCase):
                     win._check_connection_sounds(ControllerState(mode="disconnected"))
                     win._check_connection_sounds(ControllerState(mode="virtual"))
                     self.assertEqual(conn_events, ["disconnected", "connected"])
+
+                from antidrift.clips.sound_fx import (
+                    SOUND_PROFILES,
+                    ensure_profile_sound_assets,
+                    get_sound_profile,
+                )
+                from antidrift.profiles import load_profile_store
+
+                profile_ids = [pid for pid, _ in SOUND_PROFILES]
+                for required in ("frutiger", "switch", "ps2"):
+                    self.assertIn(required, profile_ids)
+                    p_assets = ensure_profile_sound_assets(required)
+                    self.assertEqual(
+                        set(p_assets.keys()),
+                        {"charging", "unplugged", "full", "low", "connected", "disconnected"},
+                    )
+                    for wav in p_assets.values():
+                        self.assertTrue(wav.exists())
+                        self.assertGreater(wav.stat().st_size, 100)
+
+                ps2_idx = win._sound_profile_combo.findData("ps2")
+                self.assertGreaterEqual(ps2_idx, 0)
+                win._sound_profile_combo.setCurrentIndex(ps2_idx)
+                self.assertEqual(get_sound_profile(), "ps2")
+                reloaded = load_profile_store()
+                self.assertEqual(reloaded.sound_profile, "ps2")
                 app.processEvents()
                 win.close()
             finally:
