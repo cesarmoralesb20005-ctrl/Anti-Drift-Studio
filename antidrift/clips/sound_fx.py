@@ -69,14 +69,10 @@ def _synth_notes_wav(
             t = k / float(_SAMPLE_RATE)
             env = min(1.0, k / float(attack)) * math.exp(-decay_k * (t / max(0.05, dur_sec)))
             if timbre == "frutiger":
-                # Xbox 360 NXE/Blades crisp liquid-velvet UI chime (subtle 20ms scoop, warm woody body)
-                phase = 2.0 * math.pi * (
-                    freq_hz * t - (0.07 * freq_hz / 55.0) * (1.0 - math.exp(-55.0 * t))
-                )
+                # Xbox 360 notification chime: crisp rounded sine + soft glassy 2x overtone
                 sample = (
-                    math.sin(phase) * 0.76
-                    + math.sin(phase * 2.0) * 0.16 * math.exp(-10.0 * t)
-                    + math.sin(phase * 3.0) * 0.05 * math.exp(-24.0 * t)
+                    math.sin(2.0 * math.pi * freq_hz * t) * 0.86
+                    + math.sin(2.0 * math.pi * (freq_hz * 2.0) * t) * 0.14 * math.exp(-12.0 * t)
                 )
             elif timbre == "switch":
                 # Snappy Joy-Con click transient + clean bright pop
@@ -177,12 +173,12 @@ def play_clip_saved_chime() -> None:
 
 _THEME_SPECS: dict[str, dict[str, tuple[list[tuple[float, float, float, float]], float]]] = {
     "frutiger": {
-        "charging": ([(0.00, 0.11, 392.00, 0.74), (0.065, 0.20, 523.25, 0.86)], 0.27),
-        "unplugged": ([(0.00, 0.11, 523.25, 0.72), (0.065, 0.18, 392.00, 0.64)], 0.24),
-        "full": ([(0.00, 0.12, 392.00, 0.70), (0.065, 0.14, 523.25, 0.80), (0.13, 0.28, 587.33, 0.88)], 0.28),
-        "low": ([(0.00, 0.15, 329.63, 0.76), (0.11, 0.22, 261.63, 0.82)], 0.25),
-        "connected": ([(0.00, 0.10, 392.00, 0.75), (0.06, 0.22, 523.25, 0.88)], 0.27),
-        "disconnected": ([(0.00, 0.10, 523.25, 0.74), (0.06, 0.20, 392.00, 0.65)], 0.24),
+        "charging": ([(0.00, 0.10, 523.25, 0.48), (0.095, 0.18, 1046.50, 0.92)], 0.27),
+        "unplugged": ([(0.00, 0.10, 1046.50, 0.78), (0.095, 0.18, 523.25, 0.52)], 0.24),
+        "full": ([(0.00, 0.11, 575.00, 0.48), (0.10, 0.13, 1150.00, 0.88), (0.20, 0.24, 1480.00, 0.92)], 0.28),
+        "low": ([(0.00, 0.13, 575.00, 0.72), (0.13, 0.20, 440.00, 0.78)], 0.25),
+        "connected": ([(0.00, 0.11, 575.00, 0.48), (0.105, 0.19, 1150.00, 0.95)], 0.28),
+        "disconnected": ([(0.00, 0.11, 1150.00, 0.80), (0.105, 0.19, 575.00, 0.55)], 0.25),
     },
     "switch": {
         "charging": ([(0.00, 0.08, 659.25, 0.75), (0.06, 0.14, 987.77, 0.88)], 0.24),
