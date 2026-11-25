@@ -20,7 +20,7 @@ BATTERY_LOW_WAV = SOUNDS_DIR / "battery_low.wav"
 CONTROLLER_CONNECTED_WAV = SOUNDS_DIR / "controller_connected.wav"
 CONTROLLER_DISCONNECTED_WAV = SOUNDS_DIR / "controller_disconnected.wav"
 
-_SAMPLE_RATE = 44100
+_SAMPLE_RATE = 48000
 
 SOUND_PROFILES: tuple[tuple[str, str], ...] = (
     ("frutiger", "Frutiger Aero (Xbox 360)"),
@@ -51,23 +51,36 @@ def _synth_notes_wav(
     volume: float = 0.30,
     timbre: str = "warm",
 ) -> Path:
-    """Synthesize smooth chime WAV from (start_sec, dur_sec, freq_hz, rel_amp) notes."""
-    total_sec = max(s + d for s, d, _, _ in notes) + 0.06
+    """Synthesize click-free 48kHz chime WAV with raised-cosine attack/release and silence padding."""
+    lead_sec = 0.025
+    tail_sec = 0.055
+    total_sec = lead_sec + max(s + d for s, d, _, _ in notes) + tail_sec
     total_frames = int(total_sec * _SAMPLE_RATE)
     buf = [0.0] * total_frames
 
     for start_sec, dur_sec, freq_hz, rel_amp in notes:
-        i0 = int(start_sec * _SAMPLE_RATE)
+        i0 = int((lead_sec + start_sec) * _SAMPLE_RATE)
         n = int(dur_sec * _SAMPLE_RATE)
-        attack_sec = 0.003 if timbre == "switch" else (0.042 if timbre == "ps2" else 0.010)
-        decay_k = 7.5 if timbre == "switch" else (2.5 if timbre == "ps2" else 5.2)
+        attack_sec = 0.005 if timbre == "switch" else (0.045 if timbre == "ps2" else 0.012)
+        release_sec = min(dur_sec * 0.40, 0.060 if timbre == "ps2" else 0.035)
+        decay_k = 7.0 if timbre == "switch" else (2.4 if timbre == "ps2" else 5.0)
         attack = max(1, int(attack_sec * _SAMPLE_RATE))
+        release = max(1, int(release_sec * _SAMPLE_RATE))
         for k in range(n):
             idx = i0 + k
             if idx >= total_frames:
                 break
             t = k / float(_SAMPLE_RATE)
-            env = min(1.0, k / float(attack)) * math.exp(-decay_k * (t / max(0.05, dur_sec)))
+            if k < attack:
+                atk = 0.5 * (1.0 - math.cos(math.pi * (k / float(attack))))
+            else:
+                atk = 1.0
+            rem = n - 1 - k
+            if rem < release:
+                rel = 0.5 * (1.0 - math.cos(math.pi * (rem / float(release))))
+            else:
+                rel = 1.0
+            env = atk * rel * math.exp(-decay_k * (t / max(0.05, dur_sec)))
             if timbre == "frutiger":
                 # Xbox 360 notification chime: crisp rounded sine + soft glassy 2x overtone
                 sample = (
@@ -96,8 +109,8 @@ def _synth_notes_wav(
     pcm = array.array("h")
     scale = 32767.0 * max(0.05, min(0.8, volume))
     for v in buf:
-        clamped = max(-1.0, min(1.0, v))
-        pcm.append(int(round(clamped * scale)))
+        soft = math.tanh(v)
+        pcm.append(int(round(soft * scale)))
 
     path.parent.mkdir(parents=True, exist_ok=True)
     with wave.open(str(path), "wb") as wf:

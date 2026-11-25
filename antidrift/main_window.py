@@ -1685,12 +1685,25 @@ class MainWindow(QMainWindow):
             self._on_sound_profile_changed
         )
         sfx_row.addWidget(self._sound_profile_combo, 1)
-        btn_test_sfx = QPushButton("Probar")
-        btn_test_sfx.setObjectName("MiniPill")
-        btn_test_sfx.setToolTip("Escuchar un ejemplo del perfil de sonido seleccionado")
-        btn_test_sfx.clicked.connect(play_controller_connected_chime)
-        sfx_row.addWidget(btn_test_sfx)
         d_lay.addLayout(sfx_row)
+
+        sfx_test_row = QHBoxLayout()
+        sfx_test_row.setSpacing(6)
+        sfx_test_row.addWidget(QLabel("Probar sonidos:"))
+        for btn_lbl, cb in (
+            ("Conectado", play_controller_connected_chime),
+            ("Desconectado", play_controller_disconnected_chime),
+            ("Cargando", play_battery_charging_chime),
+            ("Cargador desc.", play_battery_unplugged_chime),
+            ("Batería 100%", play_battery_full_chime),
+            ("Batería baja", play_battery_low_chime),
+        ):
+            b = QPushButton(btn_lbl)
+            b.setObjectName("MiniPill")
+            b.clicked.connect(cb)
+            sfx_test_row.addWidget(b)
+        sfx_test_row.addStretch(1)
+        d_lay.addLayout(sfx_test_row)
         lay.addWidget(dev_card)
 
         health_card = QFrame()

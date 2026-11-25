@@ -1023,7 +1023,7 @@ class ClipsSubsystemTests(unittest.TestCase):
         for wav_path in (cue, saved):
             with wave.open(str(wav_path), "rb") as wf:
                 self.assertEqual(wf.getnchannels(), 1)
-                self.assertEqual(wf.getframerate(), 44100)
+                self.assertEqual(wf.getframerate(), 48000)
                 self.assertGreater(wf.getnframes(), 3000)
         ensure_notifications_not_inhibited()
 
