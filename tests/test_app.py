@@ -2275,6 +2275,17 @@ class GameSirExtraButtonsTests(unittest.TestCase):
                 self.assertEqual(get_sound_profile(), "ps2")
                 reloaded = load_profile_store()
                 self.assertEqual(reloaded.sound_profile, "ps2")
+
+                from antidrift.main_window import UI_THEME_OPTIONS, build_app_stylesheet
+
+                for tid, _ in UI_THEME_OPTIONS:
+                    qss = build_app_stylesheet(tid)
+                    self.assertIn("QMainWindow", qss)
+                nord_idx = win._theme_combo.findData("nord_slate")
+                self.assertGreaterEqual(nord_idx, 0)
+                win._theme_combo.setCurrentIndex(nord_idx)
+                reloaded2 = load_profile_store()
+                self.assertEqual(reloaded2.ui_theme, "nord_slate")
                 app.processEvents()
                 win.close()
             finally:
