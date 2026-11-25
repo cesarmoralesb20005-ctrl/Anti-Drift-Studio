@@ -236,10 +236,10 @@ def compute_surround_dsp_params(
     wrap = round(0.25 + 0.55 * k, 4)
     cross = round(-(0.15 + 0.25 * k), 4)
     return {
-        "bass_gain": 1.0,
-        "direct_gain": round(0.78 - 0.53 * k, 4),
-        "sofa_gain": round(0.22 + 0.34 * k, 4),
-        "tame_db": round(-(2.0 + 3.0 * k), 2),
+        "bass_gain": round(1.0 + 0.32 * k, 4),
+        "direct_gain": round(0.78 - 0.48 * k, 4),
+        "sofa_gain": round(0.22 + 0.26 * k, 4),
+        "tame_db": round(-(2.5 + 3.5 * k), 2),
         "wrap_gain": wrap,
         "wrap_gain_r": -wrap,
         "cross_gain": cross,
