@@ -2155,5 +2155,58 @@ class GameSirExtraButtonsTests(unittest.TestCase):
                     os.environ["XDG_CONFIG_HOME"] = old_xdg
 
 
+    def test_battery_charging_indicator_and_sound_transitions(self) -> None:
+        from unittest.mock import patch
+        from PySide6.QtWidgets import QApplication
+        from antidrift.clips.sound_fx import ensure_battery_sound_assets
+        from antidrift.evdev_reader import ControllerState
+        from antidrift.main_window import MainWindow
+
+        assets = ensure_battery_sound_assets()
+        for key in ("charging", "unplugged", "full", "low"):
+            self.assertIn(key, assets)
+            self.assertTrue(assets[key].exists())
+            self.assertGreater(assets[key].stat().st_size, 100)
+
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as tmp:
+            old_xdg = os.environ.get("XDG_CONFIG_HOME")
+            os.environ["XDG_CONFIG_HOME"] = tmp
+            try:
+                win = MainWindow(start_reader=False, enable_tray=False)
+                events: list[str] = []
+                with (
+                    patch("antidrift.main_window.play_battery_charging_chime", side_effect=lambda: events.append("charging")),
+                    patch("antidrift.main_window.play_battery_unplugged_chime", side_effect=lambda: events.append("unplugged")),
+                    patch("antidrift.main_window.play_battery_full_chime", side_effect=lambda: events.append("full")),
+                    patch("antidrift.main_window.play_battery_low_chime", side_effect=lambda: events.append("low")),
+                ):
+                    def feed(lvl: int, chg: bool) -> None:
+                        win._check_battery_sounds(
+                            ControllerState(
+                                physical_stable_id="pad1",
+                                battery_level=lvl,
+                                battery_charging=chg,
+                            )
+                        )
+
+                    feed(60, False)
+                    self.assertEqual(events, [])
+                    feed(18, False)
+                    feed(15, False)  # should not spam low alert twice
+                    feed(15, True)   # plugged in
+                    feed(100, True)  # reached 100%
+                    feed(100, True)  # should not spam full alert twice
+                    feed(100, False) # unplugged
+                    self.assertEqual(events, ["low", "charging", "full", "unplugged"])
+                app.processEvents()
+                win.close()
+            finally:
+                if old_xdg is None:
+                    os.environ.pop("XDG_CONFIG_HOME", None)
+                else:
+                    os.environ["XDG_CONFIG_HOME"] = old_xdg
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

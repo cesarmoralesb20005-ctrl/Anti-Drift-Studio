@@ -60,6 +60,12 @@ from .deps import (
     install_missing_dependencies,
     install_optional_dependency,
 )
+from .clips.sound_fx import (
+    play_battery_charging_chime,
+    play_battery_full_chime,
+    play_battery_low_chime,
+    play_battery_unplugged_chime,
+)
 from .mangohud.mh_tab import MangoHudTabWidget
 from .evdev_reader import (
     ControllerReaderThread,
@@ -511,6 +517,11 @@ class MainWindow(QMainWindow):
         self._connected_devs_cache = []
         self._profile_store: ProfileStore = load_profile_store()
         self._last_state = ControllerState()
+        self._bat_prev_device_id: str | None = None
+        self._bat_prev_charging: bool | None = None
+        self._bat_prev_level: int | None = None
+        self._bat_low_notified = False
+        self._bat_full_notified = False
         self._syncing_widgets = False
         self._service_active = False
         self._force_quit = False
@@ -2830,6 +2841,46 @@ class MainWindow(QMainWindow):
             self._macros_tab.update_detected_extra_keys(state.supported_extra_keys)
         if hasattr(self, "_clips_tab"):
             self._clips_tab.process_controller_state(state)
+        self._check_battery_sounds(state)
+
+    def _check_battery_sounds(self, state: ControllerState) -> None:
+        if state.battery_level is None:
+            return
+        dev_id = state.physical_stable_id or state.physical_path or "__default__"
+        lvl = max(0, min(100, int(state.battery_level)))
+        chg = bool(state.battery_charging)
+
+        if dev_id != self._bat_prev_device_id:
+            self._bat_prev_device_id = dev_id
+            self._bat_prev_charging = chg
+            self._bat_prev_level = lvl
+            self._bat_full_notified = lvl >= 100
+            self._bat_low_notified = lvl <= 20 and not chg
+            if self._bat_low_notified:
+                play_battery_low_chime()
+            return
+
+        prev_chg = self._bat_prev_charging
+        if prev_chg is False and chg:
+            self._bat_low_notified = False
+            play_battery_charging_chime()
+        elif prev_chg is True and not chg:
+            play_battery_unplugged_chime()
+
+        if chg and lvl >= 100 and not self._bat_full_notified:
+            self._bat_full_notified = True
+            play_battery_full_chime()
+        elif lvl < 98:
+            self._bat_full_notified = False
+
+        if not chg and lvl <= 20 and not self._bat_low_notified:
+            self._bat_low_notified = True
+            play_battery_low_chime()
+        elif chg or lvl >= 25:
+            self._bat_low_notified = False
+
+        self._bat_prev_charging = chg
+        self._bat_prev_level = lvl
 
     def _on_clip_notification(self, title: str, msg: str, clip_path: str = "") -> None:
         self.statusBar().showMessage(f"{title}: {msg}", 4500)

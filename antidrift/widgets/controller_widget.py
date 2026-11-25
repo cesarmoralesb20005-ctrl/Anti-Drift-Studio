@@ -1237,8 +1237,8 @@ class ControllerWidget(QWidget):
             return
         pct = max(0, min(100, int(lvl)))
         chg = bool(self._state.battery_charging)
-        pill = QRectF(504.0, 14.0, 82.0, 24.0)
-        p.setPen(QPen(QColor("#242E3A"), 1.2))
+        pill = QRectF(452.0, 14.0, 134.0, 24.0) if chg else QRectF(504.0, 14.0, 82.0, 24.0)
+        p.setPen(QPen(QColor("#38BDF8") if chg else QColor("#242E3A"), 1.2))
         p.setBrush(QColor("#10141A"))
         p.drawRoundedRect(pill, 6, 6)
 
@@ -1252,7 +1252,8 @@ class ControllerWidget(QWidget):
             fill_col = QColor("#EF4444")
 
         # Battery body + terminal nub
-        bx, by, bw, bh = 512.0, 20.0, 22.0, 12.0
+        bx = 460.0 if chg else 512.0
+        by, bw, bh = 20.0, 22.0, 12.0
         p.setPen(QPen(QColor("#94A3B8"), 1.2))
         p.setBrush(Qt.NoBrush)
         p.drawRoundedRect(QRectF(bx, by, bw, bh), 2.5, 2.5)
@@ -1265,7 +1266,31 @@ class ControllerWidget(QWidget):
             p.setBrush(fill_col)
             p.drawRoundedRect(QRectF(bx + 2.0, by + 2.0, inner_w, bh - 4.0), 1.2, 1.2)
 
-        p.setPen(QColor("#E2E8F0"))
-        p.setFont(QFont("JetBrains Mono", 8.5, QFont.Bold))
-        txt = f"{pct}%+" if chg else f"{pct}%"
-        p.drawText(QRectF(538.0, 14.0, 44.0, 24.0), Qt.AlignCenter, txt)
+        if chg:
+            # Vector lightning bolt next to the battery icon
+            lx = bx + bw + 7.0
+            bolt = QPolygonF(
+                [
+                    QPointF(lx + 4.5, by - 0.5),
+                    QPointF(lx + 0.5, by + 6.5),
+                    QPointF(lx + 4.0, by + 6.5),
+                    QPointF(lx + 2.5, by + 12.5),
+                    QPointF(lx + 7.5, by + 5.0),
+                    QPointF(lx + 4.0, by + 5.0),
+                ]
+            )
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor("#FACC15"))
+            p.drawPolygon(bolt)
+
+            p.setPen(QColor("#BAE6FD"))
+            p.setFont(QFont("JetBrains Mono", 8.0, QFont.Bold))
+            p.drawText(
+                QRectF(lx + 9.0, 14.0, 86.0, 24.0),
+                Qt.AlignCenter,
+                f"{pct}% Cargando",
+            )
+        else:
+            p.setPen(QColor("#E2E8F0"))
+            p.setFont(QFont("JetBrains Mono", 8.5, QFont.Bold))
+            p.drawText(QRectF(538.0, 14.0, 44.0, 24.0), Qt.AlignCenter, f"{pct}%")

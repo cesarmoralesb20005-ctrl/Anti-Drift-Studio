@@ -13,6 +13,10 @@ from pathlib import Path
 SOUNDS_DIR = Path.home() / ".cache" / "antidrift-studio" / "sounds"
 VOICE_CUE_WAV = SOUNDS_DIR / "voice_detected.wav"
 CLIP_SAVED_WAV = SOUNDS_DIR / "clip_saved.wav"
+BATTERY_CHARGING_WAV = SOUNDS_DIR / "battery_charging.wav"
+BATTERY_UNPLUGGED_WAV = SOUNDS_DIR / "battery_unplugged.wav"
+BATTERY_FULL_WAV = SOUNDS_DIR / "battery_full.wav"
+BATTERY_LOW_WAV = SOUNDS_DIR / "battery_low.wav"
 
 _SAMPLE_RATE = 44100
 
@@ -120,3 +124,70 @@ def play_clip_saved_chime() -> None:
         _play_wav_async(saved)
     except OSError:
         pass
+
+
+def ensure_battery_sound_assets() -> dict[str, Path]:
+    """Generate gentle battery notification WAV chimes on disk if missing."""
+    specs: dict[str, tuple[Path, list[tuple[float, float, float, float]], float]] = {
+        "charging": (
+            BATTERY_CHARGING_WAV,
+            [(0.00, 0.12, 659.25, 0.70), (0.08, 0.18, 880.00, 0.85)],
+            0.24,
+        ),
+        "unplugged": (
+            BATTERY_UNPLUGGED_WAV,
+            [(0.00, 0.12, 783.99, 0.75), (0.08, 0.18, 587.33, 0.65)],
+            0.22,
+        ),
+        "full": (
+            BATTERY_FULL_WAV,
+            [
+                (0.00, 0.14, 523.25, 0.65),
+                (0.07, 0.14, 659.25, 0.75),
+                (0.14, 0.16, 783.99, 0.85),
+                (0.21, 0.22, 1046.50, 0.85),
+            ],
+            0.26,
+        ),
+        "low": (
+            BATTERY_LOW_WAV,
+            [(0.00, 0.14, 440.00, 0.75), (0.11, 0.20, 349.23, 0.80)],
+            0.24,
+        ),
+    }
+    out: dict[str, Path] = {}
+    for key, (path, notes, vol) in specs.items():
+        if not path.exists():
+            _synth_notes_wav(path, notes, volume=vol)
+        out[key] = path
+    return out
+
+
+def _play_battery_event(kind: str) -> None:
+    try:
+        assets = ensure_battery_sound_assets()
+        wav = assets.get(kind)
+        if wav is not None:
+            _play_wav_async(wav)
+    except OSError:
+        pass
+
+
+def play_battery_charging_chime() -> None:
+    """Play gentle ascending chime when controller starts charging."""
+    _play_battery_event("charging")
+
+
+def play_battery_unplugged_chime() -> None:
+    """Play gentle descending chime when charger is disconnected."""
+    _play_battery_event("unplugged")
+
+
+def play_battery_full_chime() -> None:
+    """Play pleasant chime when controller battery reaches 100%."""
+    _play_battery_event("full")
+
+
+def play_battery_low_chime() -> None:
+    """Play soft double-tone alert when controller battery is low."""
+    _play_battery_event("low")
