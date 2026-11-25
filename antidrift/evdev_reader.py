@@ -1522,6 +1522,12 @@ class ControllerReaderThread(QThread):
                             for code, bname in WHEEL_SHIFTER_MAP.items():
                                 if code in cur_pressed:
                                     raw_btns[bname] = True
+                            if virtual_stalled:
+                                with self._lock:
+                                    nin_swap = bool(self._config.nintendo_layout)
+                                if nin_swap:
+                                    raw_btns["A"], raw_btns["B"] = raw_btns["B"], raw_btns["A"]
+                                    raw_btns["X"], raw_btns["Y"] = raw_btns["Y"], raw_btns["X"]
                             if raw_btns != state.buttons:
                                 state.buttons = raw_btns
                                 dirty = True
