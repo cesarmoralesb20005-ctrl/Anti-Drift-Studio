@@ -267,7 +267,6 @@ QFrame#Card {{
 QFrame#HeaderBar {{
     background-color: {t['header_bg']};
     border: 1px solid {t['border']};
-    border-bottom: 2px solid {t['accent']};
     border-radius: 8px;
 }}
 QLabel#Title {{
@@ -957,8 +956,7 @@ class MainWindow(QMainWindow):
         )
         self._auto_prof_chk.toggled.connect(self._on_toggle_auto_profile)
         pb_lay.addWidget(self._auto_prof_chk)
-
-        w_lay.addWidget(prof_bar)
+        self._prof_bar = prof_bar
 
         tabs = QTabWidget()
         tabs.addTab(self._build_drift_tab(), "Arreglar Drift")
@@ -982,7 +980,6 @@ class MainWindow(QMainWindow):
         tabs.addTab(self._build_settings_tab(), "Ajustes")
 
         def _on_tab_changed(idx: int) -> None:
-            prof_bar.setVisible(idx not in (clips_idx, eq_idx, mh_idx))
             if idx == eq_idx and self._start_reader:
                 self._eq_tab.refresh_audio_devices()
                 self._eq_tab.refresh_app_streams()
@@ -1003,6 +1000,7 @@ class MainWindow(QMainWindow):
         outer = QVBoxLayout(tab)
         outer.setContentsMargins(0, 6, 0, 0)
         outer.setSpacing(10)
+        outer.addWidget(self._prof_bar)
 
         scroll = FitWidthScrollArea()
         self._mode_stack = QStackedWidget()
