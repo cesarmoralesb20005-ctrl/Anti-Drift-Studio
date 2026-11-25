@@ -372,10 +372,10 @@ def generate_pipewire_eq_conf(cfg: EqualizerConfig, target_sink: str = "") -> st
     if sofa_file:
         nodes_lines.extend(
             [
-                '                    { type = builtin name = surround_bassL label = bq_lowpass control = { "Freq" = 260.0 "Q" = 0.707 } }',
-                '                    { type = builtin name = surround_bassR label = bq_lowpass control = { "Freq" = 260.0 "Q" = 0.707 } }',
-                '                    { type = builtin name = surround_hiL label = bq_highpass control = { "Freq" = 340.0 "Q" = 0.707 } }',
-                '                    { type = builtin name = surround_hiR label = bq_highpass control = { "Freq" = 340.0 "Q" = 0.707 } }',
+                '                    { type = builtin name = surround_bassL label = bq_lowpass control = { "Freq" = 200.0 "Q" = 0.500 } }',
+                '                    { type = builtin name = surround_bassR label = bq_lowpass control = { "Freq" = 200.0 "Q" = 0.500 } }',
+                '                    { type = builtin name = surround_hiL label = bq_highpass control = { "Freq" = 200.0 "Q" = 0.500 } }',
+                '                    { type = builtin name = surround_hiR label = bq_highpass control = { "Freq" = 200.0 "Q" = 0.500 } }',
                 f'                    {{ type = sofa name = surround_sofa_l label = spatializer config = {{ "filename" = "{sofa_file}" "normalize" = true }} control = {{ "Azimuth" = 125.0 "Elevation" = 18.0 "Radius" = 1.6 }} }}',
                 f'                    {{ type = sofa name = surround_sofa_r label = spatializer config = {{ "filename" = "{sofa_file}" "normalize" = true }} control = {{ "Azimuth" = -125.0 "Elevation" = 18.0 "Radius" = 1.6 }} }}',
                 f'                    {{ type = builtin name = surround_blendL label = mixer control = {{ "Gain 1" = {sr["direct_gain"]:.4f} "Gain 2" = {sr["sofa_gain"]:.4f} "Gain 3" = {sr["sofa_cross_gain"]:.4f} "Gain 4" = {sr["bass_gain"]:.4f} }} }}',
