@@ -120,22 +120,22 @@ UI_THEME_OPTIONS: tuple[tuple[str, str], ...] = (
 
 UI_THEMES: dict[str, dict[str, str]] = {
     "solid_dark": {
-        "win_bg": "#18181A",
-        "card_bg": "#1F1F23",
-        "header_bg": "#1B1B1E",
-        "inset_bg": "#141416",
-        "btn_bg": "#25252A",
-        "btn_hover": "#2E2E35",
-        "border": "#2C2C32",
-        "border_hover": "#3F3F46",
-        "text": "#ECECF1",
-        "muted": "#9CA3AF",
+        "win_bg": "#0B0B0C",
+        "card_bg": "#131315",
+        "header_bg": "#101012",
+        "inset_bg": "#080809",
+        "btn_bg": "#1A1A1D",
+        "btn_hover": "#242428",
+        "border": "#252528",
+        "border_hover": "#3A3A3F",
+        "text": "#EDEDEF",
+        "muted": "#9A9AA0",
         "accent": "#3B82F6",
         "accent_hover": "#2563EB",
         "accent_bright": "#60A5FA",
-        "accent_dim_bg": "#1E293B",
-        "accent_dim_fg": "#93C5FD",
-        "status_bg": "#141416",
+        "accent_dim_bg": "#1D1D21",
+        "accent_dim_fg": "#F4F4F5",
+        "status_bg": "#080809",
     },
     "graphite_orange": {
         "win_bg": "#141416",
@@ -1807,21 +1807,26 @@ class MainWindow(QMainWindow):
         d_lay.addLayout(sfx_row)
 
         sfx_test_row = QHBoxLayout()
-        sfx_test_row.setSpacing(6)
-        sfx_test_row.addWidget(QLabel("Probar sonidos:"))
-        for btn_lbl, cb in (
-            ("Conectado", play_controller_connected_chime),
-            ("Desconectado", play_controller_disconnected_chime),
-            ("Cargando", play_battery_charging_chime),
-            ("Cargador desc.", play_battery_unplugged_chime),
-            ("Batería 100%", play_battery_full_chime),
-            ("Batería baja", play_battery_low_chime),
+        sfx_test_row.setSpacing(8)
+        sfx_test_lbl = QLabel("Probar sonidos:")
+        sfx_test_row.addWidget(sfx_test_lbl, 0, Qt.AlignTop)
+        sfx_grid = QGridLayout()
+        sfx_grid.setSpacing(6)
+        for idx, (btn_lbl, cb) in enumerate(
+            (
+                ("Conectado", play_controller_connected_chime),
+                ("Desconectado", play_controller_disconnected_chime),
+                ("Cargando", play_battery_charging_chime),
+                ("Cargador desc.", play_battery_unplugged_chime),
+                ("Batería 100%", play_battery_full_chime),
+                ("Batería baja", play_battery_low_chime),
+            )
         ):
             b = QPushButton(btn_lbl)
             b.setObjectName("MiniPill")
             b.clicked.connect(cb)
-            sfx_test_row.addWidget(b)
-        sfx_test_row.addStretch(1)
+            sfx_grid.addWidget(b, idx // 3, idx % 3)
+        sfx_test_row.addLayout(sfx_grid, 1)
         d_lay.addLayout(sfx_test_row)
         lay.addWidget(dev_card)
 
