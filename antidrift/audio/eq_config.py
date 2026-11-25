@@ -220,24 +220,24 @@ def compute_stereo_dsp_params(
 def compute_surround_dsp_params(
     enabled: bool, intensity: float = 0.5, bypass: bool = False
 ) -> dict[str, float]:
-    """Compute SOFA HRTF 3D surround parameters keeping core music anchored."""
+    """Compute SOFA HRTF 3D surround parameters keeping <180Hz bass 100% intact."""
     if not enabled or bypass:
         return {
+            "bass_gain": 1.0,
             "direct_gain": 1.0,
             "sofa_gain": 0.0,
-            "sub_gain_db": 0.0,
             "wrap_gain": 0.0,
             "wrap_gain_r": 0.0,
             "cross_gain": 0.0,
             "cross_gain_r": 0.0,
         }
     k = max(0.0, min(1.0, float(intensity)))
-    wrap = round(0.25 + 0.50 * k, 4)
+    wrap = round(0.25 + 0.55 * k, 4)
     cross = round(-(0.15 + 0.25 * k), 4)
     return {
-        "direct_gain": round(0.85 - 0.57 * k, 4),
-        "sofa_gain": round(0.30 + 0.62 * k, 4),
-        "sub_gain_db": round(1.4 + 5.8 * k, 2),
+        "bass_gain": 1.0,
+        "direct_gain": round(0.82 - 0.64 * k, 4),
+        "sofa_gain": round(0.32 + 0.73 * k, 4),
         "wrap_gain": wrap,
         "wrap_gain_r": -wrap,
         "cross_gain": cross,

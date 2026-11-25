@@ -372,12 +372,14 @@ def generate_pipewire_eq_conf(cfg: EqualizerConfig, target_sink: str = "") -> st
     if sofa_file:
         nodes_lines.extend(
             [
+                '                    { type = builtin name = surround_bassL label = bq_lowpass control = { "Freq" = 180.0 "Q" = 0.707 } }',
+                '                    { type = builtin name = surround_bassR label = bq_lowpass control = { "Freq" = 180.0 "Q" = 0.707 } }',
+                '                    { type = builtin name = surround_hiL label = bq_highpass control = { "Freq" = 180.0 "Q" = 0.707 } }',
+                '                    { type = builtin name = surround_hiR label = bq_highpass control = { "Freq" = 180.0 "Q" = 0.707 } }',
                 f'                    {{ type = sofa name = surround_sofa_l label = spatializer config = {{ "filename" = "{sofa_file}" "normalize" = true }} control = {{ "Azimuth" = 125.0 "Elevation" = 18.0 "Radius" = 1.6 }} }}',
                 f'                    {{ type = sofa name = surround_sofa_r label = spatializer config = {{ "filename" = "{sofa_file}" "normalize" = true }} control = {{ "Azimuth" = -125.0 "Elevation" = 18.0 "Radius" = 1.6 }} }}',
-                f'                    {{ type = builtin name = surround_blendL label = mixer control = {{ "Gain 1" = {sr["direct_gain"]:.4f} "Gain 2" = {sr["sofa_gain"]:.4f} "Gain 3" = {sr["sofa_gain"]:.4f} }} }}',
-                f'                    {{ type = builtin name = surround_blendR label = mixer control = {{ "Gain 1" = {sr["direct_gain"]:.4f} "Gain 2" = {sr["sofa_gain"]:.4f} "Gain 3" = {sr["sofa_gain"]:.4f} }} }}',
-                f'                    {{ type = builtin name = surround_subL label = bq_lowshelf control = {{ "Freq" = 160.0 "Q" = 0.707 "Gain" = {sr["sub_gain_db"]:.2f} }} }}',
-                f'                    {{ type = builtin name = surround_subR label = bq_lowshelf control = {{ "Freq" = 160.0 "Q" = 0.707 "Gain" = {sr["sub_gain_db"]:.2f} }} }}',
+                f'                    {{ type = builtin name = surround_blendL label = mixer control = {{ "Gain 1" = {sr["direct_gain"]:.4f} "Gain 2" = {sr["sofa_gain"]:.4f} "Gain 3" = {sr["sofa_gain"]:.4f} "Gain 4" = {sr["bass_gain"]:.4f} }} }}',
+                f'                    {{ type = builtin name = surround_blendR label = mixer control = {{ "Gain 1" = {sr["direct_gain"]:.4f} "Gain 2" = {sr["sofa_gain"]:.4f} "Gain 3" = {sr["sofa_gain"]:.4f} "Gain 4" = {sr["bass_gain"]:.4f} }} }}',
                 f'                    {{ type = builtin name = preamp label = linear control = {{ "Mult" = {mult:.6f} "Add" = 0.0 }} }}',
                 f'                    {{ type = builtin name = preampR label = linear control = {{ "Mult" = {mult:.6f} "Add" = 0.0 }} }}',
             ]
@@ -421,18 +423,22 @@ def generate_pipewire_eq_conf(cfg: EqualizerConfig, target_sink: str = "") -> st
     if sofa_file:
         links_lines.extend(
             [
-                '                    { output = "st_outL:Out" input = "surround_sofa_l:In" }',
-                '                    { output = "st_outR:Out" input = "surround_sofa_r:In" }',
-                '                    { output = "st_outL:Out" input = "surround_blendL:In 1" }',
+                '                    { output = "st_outL:Out" input = "surround_bassL:In" }',
+                '                    { output = "st_outR:Out" input = "surround_bassR:In" }',
+                '                    { output = "st_outL:Out" input = "surround_hiL:In" }',
+                '                    { output = "st_outR:Out" input = "surround_hiR:In" }',
+                '                    { output = "surround_hiL:Out" input = "surround_sofa_l:In" }',
+                '                    { output = "surround_hiR:Out" input = "surround_sofa_r:In" }',
+                '                    { output = "surround_hiL:Out" input = "surround_blendL:In 1" }',
                 '                    { output = "surround_sofa_l:Out L" input = "surround_blendL:In 2" }',
                 '                    { output = "surround_sofa_r:Out L" input = "surround_blendL:In 3" }',
-                '                    { output = "st_outR:Out" input = "surround_blendR:In 1" }',
+                '                    { output = "surround_bassL:Out" input = "surround_blendL:In 4" }',
+                '                    { output = "surround_hiR:Out" input = "surround_blendR:In 1" }',
                 '                    { output = "surround_sofa_l:Out R" input = "surround_blendR:In 2" }',
                 '                    { output = "surround_sofa_r:Out R" input = "surround_blendR:In 3" }',
-                '                    { output = "surround_blendL:Out" input = "surround_subL:In" }',
-                '                    { output = "surround_blendR:Out" input = "surround_subR:In" }',
-                '                    { output = "surround_subL:Out" input = "preamp:In" }',
-                '                    { output = "surround_subR:Out" input = "preampR:In" }',
+                '                    { output = "surround_bassR:Out" input = "surround_blendR:In 4" }',
+                '                    { output = "surround_blendL:Out" input = "preamp:In" }',
+                '                    { output = "surround_blendR:Out" input = "preampR:In" }',
                 '                    { output = "preamp:Out" input = "b1:In" }',
                 '                    { output = "preampR:Out" input = "b1R:In" }',
             ]
@@ -554,7 +560,7 @@ def _node_has_stereo_graph(obj: dict | None) -> bool:
     for entry in props_list:
         if isinstance(entry, dict):
             params = entry.get("params") or []
-            if "surround_subL:Gain" in params or "surround_wrapDelL:Delay (s)" in params:
+            if "surround_bassL:Freq" in params or "surround_wrapDelL:Delay (s)" in params:
                 return True
     return False
 
@@ -619,8 +625,8 @@ def apply_eq_live_params(cfg: EqualizerConfig) -> bool:
     if sofa_file:
         tokens.extend(
             [
-                f'"surround_subL:Gain" {sr["sub_gain_db"]:.2f}',
-                f'"surround_subR:Gain" {sr["sub_gain_db"]:.2f}',
+                f'"surround_blendL:Gain 4" {sr["bass_gain"]:.4f}',
+                f'"surround_blendR:Gain 4" {sr["bass_gain"]:.4f}',
             ]
         )
     pod = "{ params = [ " + " ".join(tokens) + " ] }"
