@@ -59,8 +59,8 @@ def _synth_notes_wav(
     for start_sec, dur_sec, freq_hz, rel_amp in notes:
         i0 = int(start_sec * _SAMPLE_RATE)
         n = int(dur_sec * _SAMPLE_RATE)
-        attack_sec = 0.003 if timbre == "switch" else (0.018 if timbre == "ps2" else 0.010)
-        decay_k = 7.5 if timbre == "switch" else (3.6 if timbre == "ps2" else 5.2)
+        attack_sec = 0.003 if timbre == "switch" else (0.042 if timbre == "ps2" else 0.010)
+        decay_k = 7.5 if timbre == "switch" else (2.5 if timbre == "ps2" else 5.2)
         attack = max(1, int(attack_sec * _SAMPLE_RATE))
         for k in range(n):
             idx = i0 + k
@@ -83,11 +83,12 @@ def _synth_notes_wav(
                 click = math.sin(2.0 * math.pi * (freq_hz * 2.5) * t) * math.exp(-85.0 * t) * 0.35
                 sample = math.sin(2.0 * math.pi * freq_hz * t) * 0.85 + click
             elif timbre == "ps2":
-                # Atmospheric crystalline PS2 synth pad
+                # Dreamy PS2 BIOS/Browser pad: slow-attack detuned chorus + crystalline glass shimmer
                 sample = (
-                    math.sin(2.0 * math.pi * freq_hz * t) * 0.62
-                    + math.sin(2.0 * math.pi * (freq_hz * 1.5) * t) * 0.20
-                    + math.sin(2.0 * math.pi * (freq_hz * 2.0) * t) * 0.18
+                    math.sin(2.0 * math.pi * (freq_hz * 0.9965) * t) * 0.42
+                    + math.sin(2.0 * math.pi * (freq_hz * 1.0035) * t) * 0.42
+                    + math.sin(2.0 * math.pi * (freq_hz * 2.0) * t) * 0.10
+                    + math.sin(2.0 * math.pi * (freq_hz * 4.0) * t) * 0.06 * math.exp(-3.5 * t)
                 )
             else:
                 sample = (
@@ -192,12 +193,12 @@ _THEME_SPECS: dict[str, dict[str, tuple[list[tuple[float, float, float, float]],
         "disconnected": ([(0.00, 0.07, 1046.50, 0.72), (0.06, 0.13, 783.99, 0.66)], 0.22),
     },
     "ps2": {
-        "charging": ([(0.00, 0.20, 329.63, 0.70), (0.10, 0.22, 493.88, 0.78), (0.20, 0.28, 659.25, 0.82)], 0.25),
-        "unplugged": ([(0.00, 0.20, 659.25, 0.70), (0.11, 0.26, 493.88, 0.62)], 0.22),
-        "full": ([(0.00, 0.22, 261.63, 0.68), (0.09, 0.22, 392.00, 0.76), (0.18, 0.24, 587.33, 0.82), (0.27, 0.32, 783.99, 0.85)], 0.26),
-        "low": ([(0.00, 0.20, 220.00, 0.75), (0.16, 0.26, 164.81, 0.80)], 0.24),
-        "connected": ([(0.00, 0.22, 261.63, 0.68), (0.08, 0.24, 392.00, 0.76), (0.16, 0.26, 587.33, 0.82), (0.24, 0.32, 880.00, 0.84)], 0.25),
-        "disconnected": ([(0.00, 0.20, 880.00, 0.70), (0.10, 0.22, 587.33, 0.64), (0.20, 0.28, 392.00, 0.58)], 0.22),
+        "charging": ([(0.00, 0.34, 293.66, 0.65), (0.12, 0.44, 440.00, 0.78), (0.24, 0.56, 659.25, 0.82)], 0.27),
+        "unplugged": ([(0.00, 0.32, 659.25, 0.68), (0.14, 0.46, 440.00, 0.60)], 0.24),
+        "full": ([(0.00, 0.38, 220.00, 0.65), (0.12, 0.42, 329.63, 0.72), (0.24, 0.48, 493.88, 0.78), (0.36, 0.65, 659.25, 0.84)], 0.28),
+        "low": ([(0.00, 0.36, 207.65, 0.72), (0.20, 0.48, 155.56, 0.78)], 0.25),
+        "connected": ([(0.00, 0.38, 220.00, 0.65), (0.11, 0.42, 329.63, 0.74), (0.22, 0.50, 493.88, 0.80), (0.33, 0.66, 659.25, 0.85)], 0.27),
+        "disconnected": ([(0.00, 0.34, 659.25, 0.68), (0.12, 0.38, 493.88, 0.62), (0.24, 0.52, 329.63, 0.56)], 0.24),
     },
     "suave": {
         "charging": ([(0.00, 0.12, 659.25, 0.70), (0.08, 0.18, 880.00, 0.85)], 0.24),
