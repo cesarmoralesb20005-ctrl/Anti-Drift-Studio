@@ -229,8 +229,8 @@ def compute_surround_dsp_params(
             "cross_gain_r": 0.0,
         }
     return {
-        "direct_gain": 0.38,
-        "sofa_gain": 0.78,
+        "direct_gain": 1.0,
+        "sofa_gain": 0.65,
         "wrap_gain": 0.44,
         "wrap_gain_r": -0.44,
         "cross_gain": -0.28,
