@@ -348,14 +348,16 @@ def generate_pipewire_eq_conf(cfg: EqualizerConfig, target_sink: str = "") -> st
         f'                    {{ type = builtin name = st_side_blend label = mixer control = {{ "Gain 1" = {st["side_gain"]:.4f} "Gain 2" = {st["haas_gain"]:.4f} "Gain 3" = {st["raw_side_gain"]:.4f} }} }}',
         '                    { type = builtin name = st_outL label = mixer control = { "Gain 1" = 1.0 "Gain 2" = 1.0 } }',
         '                    { type = builtin name = st_outR label = mixer control = { "Gain 1" = 1.0 "Gain 2" = -1.0 } }',
-        '                    { type = builtin name = surround_apL label = bq_allpass control = { "Freq" = 700.0 "Q" = 0.707 } }',
-        '                    { type = builtin name = surround_apR label = bq_allpass control = { "Freq" = 1400.0 "Q" = 0.707 } }',
-        '                    { type = builtin name = surround_delL label = delay config = { "max-delay" = 1 } control = { "Delay (s)" = 0.0006 "Feedback" = 0.0 "Feedforward" = 0.0 } }',
-        '                    { type = builtin name = surround_delR label = delay config = { "max-delay" = 1 } control = { "Delay (s)" = 0.0004 "Feedback" = 0.0 "Feedforward" = 0.0 } }',
-        '                    { type = builtin name = surround_lpL label = bq_lowpass control = { "Freq" = 4200.0 "Q" = 0.707 } }',
-        '                    { type = builtin name = surround_lpR label = bq_lowpass control = { "Freq" = 4200.0 "Q" = 0.707 } }',
+        '                    { type = builtin name = surround_apL label = bq_allpass control = { "Freq" = 420.0 "Q" = 0.707 } }',
+        '                    { type = builtin name = surround_apR label = bq_allpass control = { "Freq" = 1650.0 "Q" = 0.707 } }',
+        '                    { type = builtin name = surround_wrapDelL label = delay config = { "max-delay" = 1 } control = { "Delay (s)" = 0.0016 "Feedback" = 0.0 "Feedforward" = 0.0 } }',
+        '                    { type = builtin name = surround_wrapDelR label = delay config = { "max-delay" = 1 } control = { "Delay (s)" = 0.0011 "Feedback" = 0.0 "Feedforward" = 0.0 } }',
+        '                    { type = builtin name = surround_delL label = delay config = { "max-delay" = 1 } control = { "Delay (s)" = 0.0007 "Feedback" = 0.0 "Feedforward" = 0.0 } }',
+        '                    { type = builtin name = surround_delR label = delay config = { "max-delay" = 1 } control = { "Delay (s)" = 0.0005 "Feedback" = 0.0 "Feedforward" = 0.0 } }',
+        '                    { type = builtin name = surround_lpL label = bq_lowpass control = { "Freq" = 3600.0 "Q" = 0.707 } }',
+        '                    { type = builtin name = surround_lpR label = bq_lowpass control = { "Freq" = 3600.0 "Q" = 0.707 } }',
         f'                    {{ type = builtin name = surround_blendL label = mixer control = {{ "Gain 1" = {sr["direct_gain"]:.4f} "Gain 2" = {sr["wrap_gain"]:.4f} "Gain 3" = {sr["cross_gain"]:.4f} }} }}',
-        f'                    {{ type = builtin name = surround_blendR label = mixer control = {{ "Gain 1" = {sr["direct_gain"]:.4f} "Gain 2" = {sr["wrap_gain"]:.4f} "Gain 3" = {sr["cross_gain"]:.4f} }} }}',
+        f'                    {{ type = builtin name = surround_blendR label = mixer control = {{ "Gain 1" = {sr["direct_gain"]:.4f} "Gain 2" = {sr["wrap_gain_r"]:.4f} "Gain 3" = {sr["cross_gain"]:.4f} }} }}',
         f'                    {{ type = builtin name = preamp label = linear control = {{ "Mult" = {mult:.6f} "Add" = 0.0 }} }}',
         f'                    {{ type = builtin name = preampR label = linear control = {{ "Mult" = {mult:.6f} "Add" = 0.0 }} }}',
     ]
@@ -377,17 +379,19 @@ def generate_pipewire_eq_conf(cfg: EqualizerConfig, target_sink: str = "") -> st
         '                    { output = "st_side_blend:Out" input = "st_outL:In 2" }',
         '                    { output = "st_mid:Out" input = "st_outR:In 1" }',
         '                    { output = "st_side_blend:Out" input = "st_outR:In 2" }',
-        '                    { output = "st_outL:Out" input = "surround_apL:In" }',
-        '                    { output = "st_outR:Out" input = "surround_apR:In" }',
+        '                    { output = "st_side_blend:Out" input = "surround_apL:In" }',
+        '                    { output = "st_side_blend:Out" input = "surround_apR:In" }',
+        '                    { output = "surround_apL:Out" input = "surround_wrapDelL:In" }',
+        '                    { output = "surround_apR:Out" input = "surround_wrapDelR:In" }',
         '                    { output = "st_outL:Out" input = "surround_delL:In" }',
         '                    { output = "st_outR:Out" input = "surround_delR:In" }',
         '                    { output = "surround_delL:Out" input = "surround_lpL:In" }',
         '                    { output = "surround_delR:Out" input = "surround_lpR:In" }',
         '                    { output = "st_outL:Out" input = "surround_blendL:In 1" }',
-        '                    { output = "surround_apL:Out" input = "surround_blendL:In 2" }',
+        '                    { output = "surround_wrapDelL:Out" input = "surround_blendL:In 2" }',
         '                    { output = "surround_lpR:Out" input = "surround_blendL:In 3" }',
         '                    { output = "st_outR:Out" input = "surround_blendR:In 1" }',
-        '                    { output = "surround_apR:Out" input = "surround_blendR:In 2" }',
+        '                    { output = "surround_wrapDelR:Out" input = "surround_blendR:In 2" }',
         '                    { output = "surround_lpL:Out" input = "surround_blendR:In 3" }',
         '                    { output = "surround_blendL:Out" input = "preamp:In" }',
         '                    { output = "surround_blendR:Out" input = "preampR:In" }',
@@ -488,7 +492,7 @@ def _node_has_stereo_graph(obj: dict | None) -> bool:
     for entry in props_list:
         if isinstance(entry, dict):
             params = entry.get("params") or []
-            if "surround_blendL:Gain 1" in params:
+            if "surround_wrapDelL:Delay (s)" in params:
                 return True
     return False
 
@@ -535,7 +539,7 @@ def apply_eq_live_params(cfg: EqualizerConfig) -> bool:
         f'"surround_blendL:Gain 2" {sr["wrap_gain"]:.4f}',
         f'"surround_blendL:Gain 3" {sr["cross_gain"]:.4f}',
         f'"surround_blendR:Gain 1" {sr["direct_gain"]:.4f}',
-        f'"surround_blendR:Gain 2" {sr["wrap_gain"]:.4f}',
+        f'"surround_blendR:Gain 2" {sr["wrap_gain_r"]:.4f}',
         f'"surround_blendR:Gain 3" {sr["cross_gain"]:.4f}',
         f'"preamp:Mult" {mult:.6f}',
         f'"preampR:Mult" {mult:.6f}',

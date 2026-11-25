@@ -223,12 +223,14 @@ def compute_surround_dsp_params(
         return {
             "direct_gain": 1.0,
             "wrap_gain": 0.0,
+            "wrap_gain_r": 0.0,
             "cross_gain": 0.0,
         }
     return {
-        "direct_gain": 0.92,
-        "wrap_gain": 0.26,
-        "cross_gain": -0.18,
+        "direct_gain": 0.94,
+        "wrap_gain": 0.62,
+        "wrap_gain_r": -0.62,
+        "cross_gain": -0.28,
     }
 
 
