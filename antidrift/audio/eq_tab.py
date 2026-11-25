@@ -36,6 +36,7 @@ from ..widgets.fit_scroll import FitWidthScrollArea
 from .eq_backend import (
     AudioAppStream,
     AudioSinkInfo,
+    _find_eq_pipewire_node_id,
     get_active_sink_info,
     list_physical_sinks,
     list_sink_inputs,
@@ -43,6 +44,7 @@ from .eq_backend import (
     set_sink_input_volume,
     set_sink_mute,
     set_sink_volume_and_balance,
+    set_surround_orbit_azimuth,
     start_or_update_eq,
 )
 from .eq_config import (
@@ -397,6 +399,12 @@ class EqTabWidget(QWidget):
         self._live_timer.setInterval(45)
         self._live_timer.timeout.connect(self._flush_live_eq_params)
 
+        self._orbit_angle_deg: float = 0.0
+        self._orbit_nid: int | None = None
+        self._orbit_timer = QTimer(self)
+        self._orbit_timer.setInterval(120)
+        self._orbit_timer.timeout.connect(self._step_surround_orbit)
+
         self._save_timer = QTimer(self)
         self._save_timer.setSingleShot(True)
         self._save_timer.setInterval(350)
@@ -423,6 +431,7 @@ class EqTabWidget(QWidget):
 
     def shutdown(self) -> None:
         """Flush pending equalizer timers and stop audio event watcher cleanly."""
+        self._orbit_timer.stop()
         self._mixer_poll_timer.stop()
         self._auto_refresh_timer.stop()
         if self._event_thread is not None:
@@ -1119,6 +1128,39 @@ class EqTabWidget(QWidget):
         self._stereo_val_lbl.setText(
             f"{pct}% · {int(st['haas_delay_ms'])} ms · +{st['exciter_16k_db']:.1f} dB"
         )
+        self._sync_orbit_timer()
+
+    def _sync_orbit_timer(self) -> None:
+        if not self._start_background:
+            return
+        want = bool(
+            self._config.enabled
+            and self._config.surround_enabled
+            and not self._config.bypass
+        )
+        if want and not self._orbit_timer.isActive():
+            self._orbit_nid = _find_eq_pipewire_node_id()
+            self._orbit_timer.start()
+        elif not want and self._orbit_timer.isActive():
+            self._orbit_timer.stop()
+            if self._orbit_nid is not None:
+                set_surround_orbit_azimuth(self._orbit_nid, 125.0, -125.0, 18.0)
+
+    def _step_surround_orbit(self) -> None:
+        if not self._start_background:
+            self._orbit_timer.stop()
+            return
+        if self._orbit_nid is None:
+            self._orbit_nid = _find_eq_pipewire_node_id()
+            if self._orbit_nid is None:
+                return
+        self._orbit_angle_deg = (self._orbit_angle_deg + 7.5) % 360.0
+        az_l = ((self._orbit_angle_deg + 180.0) % 360.0) - 180.0
+        az_r = ((self._orbit_angle_deg + 360.0) % 360.0) - 180.0
+        # Gentle elevation breath: +6 deg in front (0 deg), +22 deg behind (±180 deg)
+        elev = 14.0 - 8.0 * math.cos(math.radians(self._orbit_angle_deg))
+        if not set_surround_orbit_azimuth(self._orbit_nid, az_l, az_r, elev):
+            self._orbit_nid = None
 
     def _on_stereo_enabled_toggled(self, checked: bool) -> None:
         if self._syncing:

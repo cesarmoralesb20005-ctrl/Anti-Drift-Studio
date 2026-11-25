@@ -640,6 +640,24 @@ def apply_eq_live_params(cfg: EqualizerConfig) -> bool:
     return rc == 0
 
 
+def set_surround_orbit_azimuth(
+    nid: int, az_l: float, az_r: float, elev: float = 14.0
+) -> bool:
+    """Update SOFA spatializer Azimuth/Elevation live for 360-degree 3D orbit."""
+    if os.environ.get("QT_QPA_PLATFORM") == "offscreen":
+        return False
+    pod = (
+        "{ params = [ "
+        f'"surround_sofa_l:Azimuth" {az_l:.1f} '
+        f'"surround_sofa_r:Azimuth" {az_r:.1f} '
+        f'"surround_sofa_l:Elevation" {elev:.1f} '
+        f'"surround_sofa_r:Elevation" {elev:.1f} '
+        "] }"
+    )
+    rc, _, _ = _run(["pw-cli", "s", str(nid), "Props", pod], timeout=1.0)
+    return rc == 0
+
+
 def _ensure_eq_systemd_unit(pipewire_bin: str) -> bool:
     if not shutil.which("systemctl"):
         return False
