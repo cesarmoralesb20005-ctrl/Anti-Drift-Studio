@@ -352,7 +352,7 @@ def generate_pipewire_eq_conf(cfg: EqualizerConfig, target_sink: str = "") -> st
     mult = 1.0 if cfg.bypass else round(10.0 ** (eff_pre / 20.0), 6)
     gains = [0.0] * len(EQ_BAND_FREQS) if cfg.bypass else list(cfg.band_gains)
     st = compute_stereo_dsp_params(cfg.stereo_enabled, cfg.stereo_width, bypass=cfg.bypass)
-    sr = compute_surround_dsp_params(cfg.surround_enabled, bypass=cfg.bypass)
+    sr = compute_surround_dsp_params(cfg.surround_enabled, cfg.surround_intensity, bypass=cfg.bypass)
 
     nodes_lines = [
         '                    { type = builtin name = inL label = copy }',
@@ -587,7 +587,7 @@ def apply_eq_live_params(cfg: EqualizerConfig) -> bool:
     mult = 1.0 if cfg.bypass else round(10.0 ** (eff_pre / 20.0), 6)
     gains = [0.0] * len(EQ_BAND_FREQS) if cfg.bypass else list(cfg.band_gains)
     st = compute_stereo_dsp_params(cfg.stereo_enabled, cfg.stereo_width, bypass=cfg.bypass)
-    sr = compute_surround_dsp_params(cfg.surround_enabled, bypass=cfg.bypass)
+    sr = compute_surround_dsp_params(cfg.surround_enabled, cfg.surround_intensity, bypass=cfg.bypass)
 
     sofa_file = find_sofa_hrtf_path()
     g2_l = sr["sofa_gain"] if sofa_file else sr["wrap_gain"]

@@ -768,6 +768,31 @@ class EqTabWidget(QWidget):
             pb.clicked.connect(lambda _=False, v=pct: self._apply_stereo_quick_pct(v))
             st_pills.addWidget(pb)
         s_lay.addLayout(st_pills)
+
+        sr_sl_row = QHBoxLayout()
+        sr_sl_row.setSpacing(8)
+        sr_lbl = QLabel("3D Alrededor:")
+        sr_lbl.setObjectName("MutedNote")
+        sr_sl_row.addWidget(sr_lbl)
+        self._surround_slider = _DoubleClickResetSlider(Qt.Horizontal)
+        self._surround_slider.setRange(0, 100)
+        self._surround_slider.setSingleStep(5)
+        self._surround_slider.setValue(50)
+        self._surround_slider.setToolTip(
+            "Intensidad del efecto 3D alrededor de la cabeza (doble clic para volver a 50%)"
+        )
+        self._surround_slider.valueChanged.connect(self._on_surround_intensity_changed)
+        self._surround_slider.reset_requested.connect(lambda: self._surround_slider.setValue(50))
+        sr_sl_row.addWidget(self._surround_slider, 1)
+
+        self._surround_val_lbl = QLabel("50% · 3D")
+        self._surround_val_lbl.setMinimumWidth(145)
+        self._surround_val_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self._surround_val_lbl.setStyleSheet(
+            "font-family: 'JetBrains Mono', monospace; font-weight: 700; color: #38BDF8;"
+        )
+        sr_sl_row.addWidget(self._surround_val_lbl)
+        s_lay.addLayout(sr_sl_row)
         lay.addWidget(st_card)
 
         # ── Card 4: Per-Application Mixer ──
@@ -837,6 +862,7 @@ class EqTabWidget(QWidget):
             self._btn_stereo.setChecked(c.stereo_enabled)
             self._btn_surround.setChecked(c.surround_enabled)
             self._stereo_slider.setValue(int(round(c.stereo_width * 100.0)))
+            self._surround_slider.setValue(int(round(c.surround_intensity * 100.0)))
             self._update_stereo_ui_labels()
 
             for i, g in enumerate(c.band_gains):
@@ -1085,6 +1111,9 @@ class EqTabWidget(QWidget):
         self._btn_surround.style().unpolish(self._btn_surround)
         self._btn_surround.style().polish(self._btn_surround)
 
+        sr_pct = int(round(self._config.surround_intensity * 100.0))
+        self._surround_val_lbl.setText(f"{sr_pct}% · 3D")
+
         pct = int(round(self._config.stereo_width * 100.0))
         st = compute_stereo_dsp_params(True, self._config.stereo_width, bypass=False)
         self._stereo_val_lbl.setText(
@@ -1124,6 +1153,13 @@ class EqTabWidget(QWidget):
             finally:
                 self._syncing = False
             self._apply_backend_full()
+            return
+        self._schedule_live_update()
+
+    def _on_surround_intensity_changed(self, val: int) -> None:
+        self._config.surround_intensity = round(max(0.0, min(1.0, val / 100.0)), 2)
+        self._update_stereo_ui_labels()
+        if self._syncing:
             return
         self._schedule_live_update()
 

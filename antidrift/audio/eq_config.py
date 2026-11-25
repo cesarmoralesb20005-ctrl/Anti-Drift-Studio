@@ -138,6 +138,7 @@ class EqualizerConfig:
     stereo_enabled: bool = False
     stereo_width: float = 0.5
     surround_enabled: bool = False
+    surround_intensity: float = 0.5
 
     def copy(self) -> EqualizerConfig:
         return replace(
@@ -174,6 +175,7 @@ class EqualizerConfig:
             stereo_enabled=bool(self.stereo_enabled),
             stereo_width=round(max(0.0, min(1.0, float(self.stereo_width))), 2),
             surround_enabled=bool(self.surround_enabled),
+            surround_intensity=round(max(0.0, min(1.0, float(self.surround_intensity))), 2),
         )
 
 
@@ -216,7 +218,7 @@ def compute_stereo_dsp_params(
 
 
 def compute_surround_dsp_params(
-    enabled: bool, bypass: bool = False
+    enabled: bool, intensity: float = 0.5, bypass: bool = False
 ) -> dict[str, float]:
     """Compute SOFA HRTF 3D surround parameters keeping core music anchored."""
     if not enabled or bypass:
@@ -229,14 +231,17 @@ def compute_surround_dsp_params(
             "cross_gain": 0.0,
             "cross_gain_r": 0.0,
         }
+    k = max(0.0, min(1.0, float(intensity)))
+    wrap = round(0.25 + 0.50 * k, 4)
+    cross = round(-(0.15 + 0.25 * k), 4)
     return {
-        "direct_gain": 0.72,
-        "sofa_gain": 0.52,
-        "sub_gain_db": 2.8,
-        "wrap_gain": 0.44,
-        "wrap_gain_r": -0.44,
-        "cross_gain": -0.28,
-        "cross_gain_r": 0.28,
+        "direct_gain": round(0.85 - 0.57 * k, 4),
+        "sofa_gain": round(0.30 + 0.62 * k, 4),
+        "sub_gain_db": round(1.4 + 5.8 * k, 2),
+        "wrap_gain": wrap,
+        "wrap_gain_r": -wrap,
+        "cross_gain": cross,
+        "cross_gain_r": -cross,
     }
 
 
@@ -355,6 +360,7 @@ def load_eq_config(path: Path | None = None) -> EqualizerConfig:
             stereo_enabled=bool(data.get("stereo_enabled", False)),
             stereo_width=float(data.get("stereo_width", 0.5)),
             surround_enabled=bool(data.get("surround_enabled", False)),
+            surround_intensity=float(data.get("surround_intensity", 0.5)),
         )
         return cfg.clamped()
     except (OSError, ValueError, TypeError):
