@@ -380,6 +380,8 @@ def generate_pipewire_eq_conf(cfg: EqualizerConfig, target_sink: str = "") -> st
                 f'                    {{ type = sofa name = surround_sofa_r label = spatializer config = {{ "filename" = "{sofa_file}" "normalize" = true }} control = {{ "Azimuth" = -125.0 "Elevation" = 18.0 "Radius" = 1.6 }} }}',
                 f'                    {{ type = builtin name = surround_blendL label = mixer control = {{ "Gain 1" = {sr["direct_gain"]:.4f} "Gain 2" = {sr["sofa_gain"]:.4f} "Gain 3" = {sr["sofa_gain"]:.4f} "Gain 4" = {sr["bass_gain"]:.4f} }} }}',
                 f'                    {{ type = builtin name = surround_blendR label = mixer control = {{ "Gain 1" = {sr["direct_gain"]:.4f} "Gain 2" = {sr["sofa_gain"]:.4f} "Gain 3" = {sr["sofa_gain"]:.4f} "Gain 4" = {sr["bass_gain"]:.4f} }} }}',
+                f'                    {{ type = builtin name = surround_tameL label = bq_peaking control = {{ "Freq" = 3500.0 "Q" = 0.850 "Gain" = {sr["tame_db"]:.2f} }} }}',
+                f'                    {{ type = builtin name = surround_tameR label = bq_peaking control = {{ "Freq" = 3500.0 "Q" = 0.850 "Gain" = {sr["tame_db"]:.2f} }} }}',
                 f'                    {{ type = builtin name = preamp label = linear control = {{ "Mult" = {mult:.6f} "Add" = 0.0 }} }}',
                 f'                    {{ type = builtin name = preampR label = linear control = {{ "Mult" = {mult:.6f} "Add" = 0.0 }} }}',
             ]
@@ -437,8 +439,10 @@ def generate_pipewire_eq_conf(cfg: EqualizerConfig, target_sink: str = "") -> st
                 '                    { output = "surround_sofa_l:Out R" input = "surround_blendR:In 2" }',
                 '                    { output = "surround_sofa_r:Out R" input = "surround_blendR:In 3" }',
                 '                    { output = "surround_bassR:Out" input = "surround_blendR:In 4" }',
-                '                    { output = "surround_blendL:Out" input = "preamp:In" }',
-                '                    { output = "surround_blendR:Out" input = "preampR:In" }',
+                '                    { output = "surround_blendL:Out" input = "surround_tameL:In" }',
+                '                    { output = "surround_blendR:Out" input = "surround_tameR:In" }',
+                '                    { output = "surround_tameL:Out" input = "preamp:In" }',
+                '                    { output = "surround_tameR:Out" input = "preampR:In" }',
                 '                    { output = "preamp:Out" input = "b1:In" }',
                 '                    { output = "preampR:Out" input = "b1R:In" }',
             ]
@@ -560,7 +564,7 @@ def _node_has_stereo_graph(obj: dict | None) -> bool:
     for entry in props_list:
         if isinstance(entry, dict):
             params = entry.get("params") or []
-            if "surround_bassL:Freq" in params or "surround_wrapDelL:Delay (s)" in params:
+            if "surround_tameL:Gain" in params or "surround_wrapDelL:Delay (s)" in params:
                 return True
     return False
 
@@ -627,6 +631,8 @@ def apply_eq_live_params(cfg: EqualizerConfig) -> bool:
             [
                 f'"surround_blendL:Gain 4" {sr["bass_gain"]:.4f}',
                 f'"surround_blendR:Gain 4" {sr["bass_gain"]:.4f}',
+                f'"surround_tameL:Gain" {sr["tame_db"]:.2f}',
+                f'"surround_tameR:Gain" {sr["tame_db"]:.2f}',
             ]
         )
     pod = "{ params = [ " + " ".join(tokens) + " ] }"
