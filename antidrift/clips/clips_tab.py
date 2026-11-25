@@ -258,9 +258,7 @@ class ClipsTabWidget(QWidget):
 
         r3 = QHBoxLayout()
         r3.setSpacing(8)
-        self._rec_status_lbl = QLabel(
-            "Pulsa 'Activar Replay' para empezar a guardar tus mejores jugadas en RAM."
-        )
+        self._rec_status_lbl = QLabel("Replay apagado")
         self._rec_status_lbl.setWordWrap(True)
         self._rec_status_lbl.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self._rec_status_lbl.setObjectName("MutedNote")
@@ -376,9 +374,8 @@ class ClipsTabWidget(QWidget):
         hk_row.addWidget(self._btn_capture_pad)
         tr_lay.addLayout(hk_row)
 
-        self._hk_status_lbl = QLabel(
-            "Atajo activo en ventana · Comando externo: ~/.local/bin/antidrift-save-clip"
-        )
+        self._hk_status_lbl = QLabel("Atajo activo")
+        self._hk_status_lbl.setToolTip("Comando externo: ~/.local/bin/antidrift-save-clip")
         self._hk_status_lbl.setWordWrap(True)
         self._hk_status_lbl.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self._hk_status_lbl.setObjectName("MutedNote")

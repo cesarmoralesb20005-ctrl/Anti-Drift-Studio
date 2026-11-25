@@ -533,12 +533,6 @@ class MangoHudTabWidget(QWidget):
             self._mode_btns[mid] = b
             mlay.addWidget(b)
 
-        tip_lbl = QLabel(
-            "Tip: dentro de cualquier juego puedes pulsar Shift Derecho + F12 para ocultar o mostrar el HUD al instante."
-        )
-        tip_lbl.setObjectName("MutedNote")
-        tip_lbl.setWordWrap(True)
-        mlay.addWidget(tip_lbl)
         mlay.addStretch(1)
 
         prev_card = QFrame()
@@ -806,7 +800,7 @@ class MangoHudTabWidget(QWidget):
         fl = QHBoxLayout(footer)
         fl.setContentsMargins(14, 10, 14, 10)
         fl.setSpacing(8)
-        self._save_status_lbl = QLabel("Configura tu HUD y pulsa Guardar y aplicar.")
+        self._save_status_lbl = QLabel("")
         self._save_status_lbl.setWordWrap(True)
         self._save_status_lbl.setObjectName("MutedNote")
         fl.addWidget(self._save_status_lbl, 1)

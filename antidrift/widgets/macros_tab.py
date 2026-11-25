@@ -230,13 +230,10 @@ class MacrosTabWidget(QWidget):
             self._sync_simple_target_to_steps
         )
         row_r.addWidget(self._simple_btn_combo, 1)
-        rp_lay.addLayout(row_r)
-        hint_r = QLabel(
-            "Mientras mantengas presionado el botón físico, el juego sentirá que presionas el botón elegido arriba."
+        self._simple_btn_combo.setToolTip(
+            "Mientras mantengas presionado el botón físico, el juego sentirá que presionas el botón elegido."
         )
-        hint_r.setWordWrap(True)
-        hint_r.setStyleSheet("color: #9B9FA8; font-size: 12px;")
-        rp_lay.addWidget(hint_r)
+        rp_lay.addLayout(row_r)
         rp_lay.addStretch(1)
         self._action_stack.addWidget(remap_page)
 

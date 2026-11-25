@@ -566,7 +566,7 @@ class EqTabWidget(QWidget):
         vol_row.addWidget(self._bal_lbl)
         t_lay.addLayout(vol_row)
 
-        self._status_lbl = QLabel("Ecualizador apagado · Pulsa el interruptor para activar.")
+        self._status_lbl = QLabel("Apagado")
         self._status_lbl.setObjectName("MutedNote")
         self._status_lbl.setWordWrap(True)
         t_lay.addWidget(self._status_lbl)
@@ -715,16 +715,11 @@ class EqTabWidget(QWidget):
         self._btn_stereo.setCheckable(True)
         self._btn_stereo.setObjectName("ProtectToggleOff")
         self._btn_stereo.toggled.connect(self._on_stereo_enabled_toggled)
+        self._btn_stereo.setToolTip(
+            "Amplía el escenario estéreo (>250 Hz para mantener graves limpios), excitador de agudos y micro-retardo Haas."
+        )
         s_hdr.addWidget(self._btn_stereo)
         s_lay.addLayout(s_hdr)
-
-        st_desc = QLabel(
-            "Amplía el escenario estéreo extrayendo el canal lateral (>250 Hz para mantener graves limpios), "
-            "excitador de agudos y micro-retardo Haas."
-        )
-        st_desc.setObjectName("MutedNote")
-        st_desc.setWordWrap(True)
-        s_lay.addWidget(st_desc)
 
         st_sl_row = QHBoxLayout()
         st_sl_row.setSpacing(8)

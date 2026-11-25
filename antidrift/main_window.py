@@ -796,9 +796,7 @@ class MainWindow(QMainWindow):
         self._vname_pill_btn.clicked.connect(self._on_quick_rename_virtual)
         c_lay.addWidget(self._vname_pill_btn)
 
-        self._active_buttons_label = QLabel(
-            "Pulsa botones o mueve las palancas para comprobar tu mando."
-        )
+        self._active_buttons_label = QLabel("Sin botones pulsados")
         self._active_buttons_label.setWordWrap(True)
         self._active_buttons_label.setAlignment(Qt.AlignCenter)
         self._active_buttons_label.setStyleSheet(
@@ -916,13 +914,12 @@ class MainWindow(QMainWindow):
         cal_row = QHBoxLayout()
         cal_text_col = QVBoxLayout()
         cal_text_col.setSpacing(2)
-        cal_title = QLabel("1. Centrar palancas automáticamente")
+        cal_title = QLabel("1. Centrar palancas")
         cal_title.setObjectName("SectionTitle")
-        self._cal_info = QLabel(
-            "Deja el mando quieto en la mesa sin tocar las palancas y pulsa Calibrar."
-        )
+        self._cal_info = QLabel("")
         self._cal_info.setWordWrap(True)
         self._cal_info.setObjectName("MutedNote")
+        self._cal_info.setVisible(False)
         cal_text_col.addWidget(cal_title)
         cal_text_col.addWidget(self._cal_info)
         cal_row.addLayout(cal_text_col, 1)
@@ -936,6 +933,9 @@ class MainWindow(QMainWindow):
 
         self._btn_auto_cal = QPushButton("Calibrar ahora")
         self._btn_auto_cal.setObjectName("AccentBtn")
+        self._btn_auto_cal.setToolTip(
+            "Deja el mando quieto sin tocar las palancas y pulsa para centrarlo"
+        )
         self._btn_auto_cal.setMinimumHeight(36)
         self._btn_auto_cal.clicked.connect(self._on_start_auto_calibration)
         cal_row.addWidget(self._btn_auto_cal)
@@ -985,13 +985,11 @@ class MainWindow(QMainWindow):
 
         # Card 3: Configurable Triggers (LT / RT limits, deadzones & response curves)
         trig_hdr_row = QHBoxLayout()
-        trig_lbl = QLabel("3. Gatillos configurables (Límite de recorrido y curva)")
+        trig_lbl = QLabel("3. Gatillos (LT / RT)")
         trig_lbl.setObjectName("SectionTitle")
+        trig_lbl.setToolTip("Límite de recorrido y curva (ideal para frenar sin bloquear en carreras)")
         trig_hdr_row.addWidget(trig_lbl)
         trig_hdr_row.addStretch(1)
-        trig_hint = QLabel("Ideal para frenar sin bloquear en carreras")
-        trig_hint.setObjectName("MutedNote")
-        trig_hdr_row.addWidget(trig_hint)
         lay.addLayout(trig_hdr_row)
 
         trig_row = QHBoxLayout()
@@ -1794,15 +1792,14 @@ class MainWindow(QMainWindow):
         short_sha = local_sha[:7] if local_sha else "—"
 
         self._upd_repo_lbl = QLabel(
-            f"Repositorio: {gh_target.owner}/{gh_target.repo} · rama {gh_target.branch} "
-            f"· versión instalada v{local_ver} ({short_sha})"
+            f"v{local_ver} ({short_sha}) · {gh_target.owner}/{gh_target.repo} ({gh_target.branch})"
         )
         self._upd_repo_lbl.setWordWrap(True)
         self._upd_repo_lbl.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self._upd_repo_lbl.setStyleSheet("color: #94A3B8; font-size: 12px;")
         u_lay.addWidget(self._upd_repo_lbl)
 
-        self._upd_status_lbl = QLabel("Estado: Comprobación automática al iniciar o bajo demanda.")
+        self._upd_status_lbl = QLabel("Listo")
         self._upd_status_lbl.setWordWrap(True)
         self._upd_status_lbl.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self._upd_status_lbl.setStyleSheet("color: #CFD2DA; font-size: 12.5px;")
@@ -2757,6 +2754,7 @@ class MainWindow(QMainWindow):
         self._btn_auto_cal.setEnabled(False)
         self._cal_progress.setValue(0)
         self._cal_progress.setVisible(True)
+        self._cal_info.setVisible(True)
         self._cal_info.setText(
             "Midiendo reposo (1.5 s)... No toques las palancas."
         )
@@ -3191,11 +3189,9 @@ class MainWindow(QMainWindow):
             txt_col.setSpacing(1)
             nlbl = QLabel(dep.name)
             nlbl.setStyleSheet("font-weight: 700; color: #F8FAFC; font-size: 12.5px;")
-            dlbl = QLabel(dep.description)
-            dlbl.setObjectName("MutedNote")
-            dlbl.setWordWrap(True)
+            nlbl.setToolTip(dep.description)
+            row_f.setToolTip(dep.description)
             txt_col.addWidget(nlbl)
-            txt_col.addWidget(dlbl)
             rlay.addLayout(txt_col, 1)
 
             if dep.installed:
