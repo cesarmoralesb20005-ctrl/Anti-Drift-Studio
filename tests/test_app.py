@@ -1652,12 +1652,24 @@ class EqualizerSubsystemTests(unittest.TestCase):
         self.assertIn('name = st_haas label = delay config = { "max-delay" = 1 }', conf_txt)
         self.assertIn('"Gain 1" = 0.0000 "Gain 2" = 0.0000 "Gain 3" = 1.0000', conf_txt)
 
-        from antidrift.audio.eq_config import compute_stereo_dsp_params
+        from antidrift.audio.eq_config import (
+            compute_stereo_dsp_params,
+            compute_surround_dsp_params,
+        )
 
         st_on = compute_stereo_dsp_params(True, 0.5, bypass=False)
         self.assertEqual(st_on["side_gain"], 1.75)
         self.assertEqual(st_on["haas_delay_ms"], 10.0)
         self.assertEqual(st_on["raw_side_gain"], 0.0)
+
+        self.assertIn("name = surround_apL label = bq_allpass", conf_txt)
+        self.assertIn("name = surround_blendL label = mixer", conf_txt)
+        sr_off = compute_surround_dsp_params(False, bypass=False)
+        self.assertEqual(sr_off["direct_gain"], 1.0)
+        self.assertEqual(sr_off["wrap_gain"], 0.0)
+        sr_on = compute_surround_dsp_params(True, bypass=False)
+        self.assertGreater(sr_on["wrap_gain"], 0.0)
+        self.assertLess(sr_on["cross_gain"], 0.0)
         self.assertEqual(st_on["exciter_16k_db"], 5.0)
         cfg_st = cfg.copy()
         cfg_st.stereo_enabled = True

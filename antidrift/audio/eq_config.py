@@ -137,6 +137,7 @@ class EqualizerConfig:
     previous_default_sink: str = ""
     stereo_enabled: bool = False
     stereo_width: float = 0.5
+    surround_enabled: bool = False
 
     def copy(self) -> EqualizerConfig:
         return replace(
@@ -172,6 +173,7 @@ class EqualizerConfig:
             previous_default_sink=str(self.previous_default_sink or "").strip(),
             stereo_enabled=bool(self.stereo_enabled),
             stereo_width=round(max(0.0, min(1.0, float(self.stereo_width))), 2),
+            surround_enabled=bool(self.surround_enabled),
         )
 
 
@@ -210,6 +212,23 @@ def compute_stereo_dsp_params(
         "exciter_4k_db": round(exc_boost * 0.4, 2),
         "exciter_8k_db": round(exc_boost * 0.7, 2),
         "exciter_16k_db": round(exc_boost, 2),
+    }
+
+
+def compute_surround_dsp_params(
+    enabled: bool, bypass: bool = False
+) -> dict[str, float]:
+    """Compute head-wrap 3D surround parameters keeping core music anchored."""
+    if not enabled or bypass:
+        return {
+            "direct_gain": 1.0,
+            "wrap_gain": 0.0,
+            "cross_gain": 0.0,
+        }
+    return {
+        "direct_gain": 0.92,
+        "wrap_gain": 0.26,
+        "cross_gain": -0.18,
     }
 
 
@@ -327,6 +346,7 @@ def load_eq_config(path: Path | None = None) -> EqualizerConfig:
             previous_default_sink=str(data.get("previous_default_sink", "")),
             stereo_enabled=bool(data.get("stereo_enabled", False)),
             stereo_width=float(data.get("stereo_width", 0.5)),
+            surround_enabled=bool(data.get("surround_enabled", False)),
         )
         return cfg.clamped()
     except (OSError, ValueError, TypeError):

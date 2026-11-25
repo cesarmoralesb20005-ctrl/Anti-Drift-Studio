@@ -711,6 +711,15 @@ class EqTabWidget(QWidget):
         s_hdr.addWidget(s_title)
         s_hdr.addStretch(1)
 
+        self._btn_surround = QPushButton("Alrededor 3D: APAGADO")
+        self._btn_surround.setCheckable(True)
+        self._btn_surround.setObjectName("ProtectToggleOff")
+        self._btn_surround.toggled.connect(self._on_surround_enabled_toggled)
+        self._btn_surround.setToolTip(
+            "Hace que los instrumentos rodeen tu cabeza manteniendo la música firme en el mismo lugar."
+        )
+        s_hdr.addWidget(self._btn_surround)
+
         self._btn_stereo = QPushButton("Estéreo: APAGADO")
         self._btn_stereo.setCheckable(True)
         self._btn_stereo.setObjectName("ProtectToggleOff")
@@ -826,6 +835,7 @@ class EqTabWidget(QWidget):
             self._bal_slider.setValue(int(round(c.balance * 100.0)))
             self._update_balance_label(c.balance)
             self._btn_stereo.setChecked(c.stereo_enabled)
+            self._btn_surround.setChecked(c.surround_enabled)
             self._stereo_slider.setValue(int(round(c.stereo_width * 100.0)))
             self._update_stereo_ui_labels()
 
@@ -1069,6 +1079,12 @@ class EqTabWidget(QWidget):
         self._btn_stereo.style().unpolish(self._btn_stereo)
         self._btn_stereo.style().polish(self._btn_stereo)
 
+        sr_on = bool(self._config.surround_enabled)
+        self._btn_surround.setText("Alrededor 3D: ACTIVO" if sr_on else "Alrededor 3D: APAGADO")
+        self._btn_surround.setObjectName("ProtectToggleOn" if sr_on else "ProtectToggleOff")
+        self._btn_surround.style().unpolish(self._btn_surround)
+        self._btn_surround.style().polish(self._btn_surround)
+
         pct = int(round(self._config.stereo_width * 100.0))
         st = compute_stereo_dsp_params(True, self._config.stereo_width, bypass=False)
         self._stereo_val_lbl.setText(
@@ -1088,6 +1104,23 @@ class EqTabWidget(QWidget):
                 self._update_enable_button_style()
                 self._btn_bypass.setEnabled(True)
                 self._update_curve()
+            finally:
+                self._syncing = False
+            self._apply_backend_full()
+            return
+        self._schedule_live_update()
+
+    def _on_surround_enabled_toggled(self, checked: bool) -> None:
+        if self._syncing:
+            return
+        self._config.surround_enabled = bool(checked)
+        self._update_stereo_ui_labels()
+        if checked and not self._config.enabled:
+            self._config.enabled = True
+            self._syncing = True
+            try:
+                self._btn_enable.setChecked(True)
+                self._update_enable_button_style()
             finally:
                 self._syncing = False
             self._apply_backend_full()
